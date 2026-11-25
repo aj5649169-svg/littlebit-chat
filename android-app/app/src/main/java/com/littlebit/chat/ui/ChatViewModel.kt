@@ -17,7 +17,6 @@ import com.littlebit.chat.data.ModelFiles
 import com.littlebit.chat.data.SettingsStore
 import com.littlebit.chat.engine.*
 import kotlinx.coroutines.asCoroutineDispatcher
-import com.littlebit.chat.engine.ThinkBlocks
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -40,7 +39,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val inference = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
         Thread(null, task, "LittleBit inference", 8L * 1024 * 1024)
     }.asCoroutineDispatcher()
-    private val engine: LlmEngine = LlamaEngine()
+    val diagnosticFile = File(app.filesDir, "inference-stage.txt")
+    private val engine: LlmEngine = LlamaEngine(diagnosticFile.path)
     val settings = SettingsStore(app)
     private val store = ChatStore(File(app.filesDir, "chats/chats.json"))
 

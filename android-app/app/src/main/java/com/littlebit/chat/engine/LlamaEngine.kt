@@ -13,7 +13,7 @@ package com.littlebit.chat.engine
  * [generate]/[continueGenerate] may run at a time — the ViewModel guards
  * engine access with a Mutex.
  */
-class LlamaEngine : LlmEngine {
+class LlamaEngine(diagnosticPath: String? = null) : LlmEngine {
 
     fun interface ProgressCallback {
         fun onProgress(progress: Float)
@@ -36,6 +36,7 @@ class LlamaEngine : LlmEngine {
 
     init {
         LlamaJni.nativeInit()
+        diagnosticPath?.let(LlamaJni::nativeSetDiagnosticPath)
     }
 
     /**

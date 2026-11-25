@@ -12,6 +12,7 @@ internal object LlamaJni {
     }
 
     external fun nativeInit()
+    external fun nativeSetDiagnosticPath(path: String)
 
     external fun nativeLoadModel(
         path: String,

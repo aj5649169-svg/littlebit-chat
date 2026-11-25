@@ -13,6 +13,8 @@
 #include "json.h"
 #include <limits>
 #include <cstring>
+#include <cstdio>
+#include <cstdarg>
 #include <ggml-backend.h>
 #include <gguf.h>
 
@@ -69,6 +71,26 @@ struct NativeEngine {
     // generate/continue boundary. Keep incomplete bytes here until complete.
     std::string         pending_utf8;
 };
+
+// One small app-private breadcrumb per phase. No model paths, prompts or reply text.
+std::mutex diagnostic_mutex;
+std::string diagnostic_path;
+
+void recordStage(const char * format, ...) {
+    char message[320];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+    __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "%s", message);
+    std::lock_guard<std::mutex> lock(diagnostic_mutex);
+    if (diagnostic_path.empty()) return;
+    const auto tmp = diagnostic_path + ".tmp";
+    if (FILE * file = fopen(tmp.c_str(), "w")) {
+        const bool written = fputs(message, file) >= 0;
+        if (fclose(file) == 0 && written) std::rename(tmp.c_str(), diagnostic_path.c_str());
+    }
+}
 
 void throwIllegalState(JNIEnv * env, const std::string & msg) {
     jclass ex = env->FindClass("java/lang/IllegalStateException");
@@ -417,7 +439,7 @@ int runSamplingLoop(JNIEnv * env, NativeEngine * e, jobject cb,
     const int n_ctx   = static_cast<int>(llama_n_ctx(e->ctx));
     const int n_vocab = static_cast<int>(llama_vocab_n_tokens(e->vocab));
 
-    __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "token_decode arch=%s layers=%d pos=%d", e->arch.c_str(), e->gpu_layers, e->n_past);
+    recordStage("token_decode arch=%s layers=%d pos=%d", e->arch.c_str(), e->gpu_layers, e->n_past);
     const auto t0 = std::chrono::steady_clock::now();
     int n_gen = 0;
     int status = 0; // 0 = finished, 1 = stopped/aborted, 2 = context full
@@ -517,6 +539,8 @@ int runSamplingLoop(JNIEnv * env, NativeEngine * e, jobject cb,
 
     const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     e->gen_ms = elapsed * 1000.0;
+    if (status >= 0) recordStage("complete arch=%s layers=%d ctx=%d generated=%d",
+                                 e->arch.c_str(), e->gpu_layers, n_ctx, n_gen);
     const double tps = elapsed > 0.0 ? static_cast<double>(n_gen) / elapsed : 0.0;
     env->CallVoidMethod(cb, g_token_on_complete, n_gen, tps);
     if (env->ExceptionCheck()) { env->ExceptionClear(); return -1; }
@@ -558,12 +582,18 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeInit(JNIEnv * env, jobject) {
     });
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_littlebit_chat_engine_LlamaJni_nativeSetDiagnosticPath(JNIEnv *env, jobject, jstring path) {
+    std::lock_guard<std::mutex> lock(diagnostic_mutex);
+    diagnostic_path = toStdString(env, path);
+}
+
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_littlebit_chat_engine_LlamaJni_nativeLoadModel(
         JNIEnv * env, jobject, jstring jpath, jint n_ctx, jint n_threads, jint n_batch,
         jint n_gpu_layers, jboolean flash, jobject jprogress) {
     try {
-        __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "model_load layers=%d ctx=%d threads=%d", n_gpu_layers, n_ctx, n_threads);
+        recordStage("model_load layers=%d ctx=%d threads=%d", n_gpu_layers, n_ctx, n_threads);
         const std::string path = toStdString(env, jpath);
         auto engine = std::make_unique<NativeEngine>();
 
@@ -630,7 +660,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeLoadModel(
                 cparams.n_threads       = n_threads;
                 cparams.n_threads_batch = n_threads;
 
-                __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "ctx_init arch=%s layers=%d ctx=%u ubatch=%u", arch, layers, cparams.n_ctx, cparams.n_ubatch);
+                recordStage("ctx_init arch=%s layers=%d ctx=%u ubatch=%u", arch, layers, cparams.n_ctx, cparams.n_ubatch);
                 if (layers > 0 && flash && !gemma4) {
                     cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO;
                     cparams.type_k = cparams.type_v = GGML_TYPE_Q8_0;
@@ -650,6 +680,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeLoadModel(
                 if (layers > 0) {
                     llama_token probe = llama_vocab_bos(engine->vocab);
                     if (probe == LLAMA_TOKEN_NULL) probe = 0;
+                    recordStage("prefill_decode startup_probe arch=%s layers=%d ctx=%u", arch, layers, cparams.n_ctx);
                     const llama_token pair[] = {probe, probe};
                     if (!decodeTokens(engine.get(), pair, 2, 0, false) ||
                         !decodeTokens(engine.get(), &probe, 1, 2, false)) {
@@ -762,7 +793,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeFormatChat(
         // assistant turns contain <think> blocks (multi-turn crash on Qwen3).
         // Kotlin strips those blocks before formatting; the ChatML fallback
         // below is the second line of defence so multi-turn NEVER crashes.
-        __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "template_apply arch=%s", e->arch.c_str());
+        recordStage("template_apply arch=%s layers=%d ctx=%u", e->arch.c_str(), e->gpu_layers, llama_n_ctx(e->ctx));
         const char * tmpl = llama_model_chat_template(e->model, nullptr);
         if (e->arch == "gemma4") {
             if (!tmpl) throw std::runtime_error("template_apply: missing Gemma 4 chat template");
@@ -897,7 +928,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
         e->cached_tokens.resize(lcp);
         e->n_past = lcp;
         const auto prefill_start = std::chrono::steady_clock::now();
-        __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "prefill_decode arch=%s layers=%d ctx=%d batch=%d ubatch=%d", e->arch.c_str(), e->gpu_layers, n_ctx, logical_batch, n_batch);
+        recordStage("prefill_decode arch=%s layers=%d ctx=%d batch=%d ubatch=%d", e->arch.c_str(), e->gpu_layers, n_ctx, logical_batch, n_batch);
         e->in_prefill.store(true);
         env->CallVoidMethod(cb, g_prefill, lcp, n_prompt);
         if (env->ExceptionCheck()) {

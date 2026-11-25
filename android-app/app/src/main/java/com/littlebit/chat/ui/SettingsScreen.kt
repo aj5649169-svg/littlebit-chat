@@ -68,6 +68,12 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
         crashLog = runCatching { crashFile.takeIf { it.isFile }?.readText() }.getOrNull()
     }
 
+    var lastStage by remember { mutableStateOf("") }
+    LaunchedEffect(advanced, vm.busy) {
+        if (advanced) lastStage = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { vm.diagnosticFile.readText() }.getOrDefault("")
+        }
+    }
     var totalRam by remember { mutableLongStateOf(0L) }
     var availRam by remember { mutableLongStateOf(0L) }
     LaunchedEffect(Unit) {
@@ -305,6 +311,11 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 item { Choices("Top K", listOf("0","20","40","80"), settings.topK.toString()) { settings.topK = it.toInt() } }
                 item { Choices("Top P (%)", listOf("80","90","95","100"), settings.topPercent.toString()) { settings.topPercent = it.toInt() } }
                 item { Choices("Min P (%)", listOf("0","5","10"), settings.minPercent.toString()) { settings.minPercent = it.toInt() } }
+                if (lastStage.isNotBlank()) item {
+                    SettingPanel("Last inference stage") {
+                        androidx.compose.foundation.text.selection.SelectionContainer { Text(lastStage) }
+                    }
+                }
                 item { Choices("Output token limit", com.littlebit.chat.engine.outputLimits.map { it.toString() }, settings.maxTokens.toString()) { settings.maxTokens = it.toInt() } }
             }
             item(key = "footer") { Spacer(Modifier.height(16.dp)) }
