@@ -283,9 +283,12 @@ private fun linked(text: String, color: Color, background: Color): AnnotatedStri
     val style = TextLinkStyles(SpanStyle(color = MaterialTheme.colorScheme.primary, textDecoration = TextDecoration.Underline))
     return buildAnnotatedString {
         append(formatted)
-        Regex("""https?://[^\s<>]+""").findAll(formatted.text).forEach { match ->
+        Regex("""https://[^\s<>]+""").findAll(formatted.text).forEach { match ->
             val url = match.value.trimEnd('.', ',', ')', ']')
-            addLink(LinkAnnotation.Url(url, style) { runCatching { uri.openUri(url) } },
+            addLink(LinkAnnotation.Url(url, style) { runCatching {
+                val target = android.net.Uri.parse(url)
+                if (target.scheme == "https" && !target.host.isNullOrBlank()) uri.openUri(url)
+            } },
                 match.range.first, match.range.first + url.length)
         }
     }

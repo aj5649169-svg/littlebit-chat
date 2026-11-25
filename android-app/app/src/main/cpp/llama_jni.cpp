@@ -810,6 +810,12 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
         const auto prefill_start = std::chrono::steady_clock::now();
         e->in_prefill.store(true);
         env->CallVoidMethod(cb, g_prefill, lcp, n_prompt);
+        if (env->ExceptionCheck()) {
+            e->in_prefill.store(false);
+            llama_sampler_free(chain);
+            env->DeleteGlobalRef(cb);
+            return -1;
+        }
         for (int i0 = lcp; i0 < n_prompt && !e->stop.load(); i0 += n_batch) {
             const int chunk = std::min(n_batch, n_prompt - i0);
             llama_batch_ext * b = llama_batch_ext_init(e->ctx);
@@ -817,9 +823,11 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
             for (int i = 0; i < chunk; i++) {
                 const llama_pos pos = e->n_past + i;
                 const int idx = llama_batch_ext_add_token(b, 0, prompt_tokens[static_cast<size_t>(i0 + i)]);
-                if (idx < 0) { failed = true; break; }
-                llama_batch_ext_set_pos(b, idx, &pos);
-                if (i == chunk - 1) llama_batch_ext_set_output_logits(b, idx, true);
+                if (idx < 0 || !llama_batch_ext_set_pos(b, idx, &pos) ||
+                    (i == chunk - 1 && !llama_batch_ext_set_output_logits(b, idx, true))) {
+                    failed = true;
+                    break;
+                }
             }
             if (failed) {
                 llama_batch_ext_free(b);
@@ -837,6 +845,12 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
                                     prompt_tokens.begin() + i0 + chunk);
             e->n_past += chunk;
             env->CallVoidMethod(cb, g_prefill, e->n_past, n_prompt);
+            if (env->ExceptionCheck()) {
+                e->in_prefill.store(false);
+                llama_sampler_free(chain);
+                env->DeleteGlobalRef(cb);
+                return -1;
+            }
         }
 
         e->in_prefill.store(false);

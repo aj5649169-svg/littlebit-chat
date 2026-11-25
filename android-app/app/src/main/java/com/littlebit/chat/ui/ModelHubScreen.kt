@@ -81,14 +81,16 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
     }
 
     fun openInChrome(url: String) {
+        val target = Uri.parse(url)
+        if (target.scheme != "https" || target.host.isNullOrBlank()) return
         runCatching {
-            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            context.startActivity(Intent(Intent.ACTION_VIEW, target))
         }.onFailure {
             if (it is ActivityNotFoundException) {
                 runCatching {
                     context.startActivity(
                         Intent.createChooser(
-                            Intent(Intent.ACTION_VIEW, Uri.parse(url)),
+                            Intent(Intent.ACTION_VIEW, target),
                             "Open with",
                         ),
                     )

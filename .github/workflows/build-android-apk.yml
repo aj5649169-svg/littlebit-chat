@@ -13,26 +13,30 @@ on:
 
 jobs:
   build:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     env:
       NDK_VERSION: "26.1.10909125"
+      GRADLE_SHA256: "5b9c5eb3f9fc2c94abaea57d90bd78747ca117ddbbf96c859d3741181a12bf2a"
       GRADLE_VERSION: "8.10"
       VULKAN_SDK_VERSION: "1.4.363.0"
       VULKAN_SDK_SHA256: "197962f5cbf80baf2775a03336a01cee7c8745686c65aaa70d3f751ade4d7e43"
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           submodules: recursive
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
            packages: ''
 
@@ -67,10 +71,11 @@ jobs:
       - name: Install Gradle
         run: |
           wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -O /tmp/gradle.zip
+          echo "${GRADLE_SHA256}  /tmp/gradle.zip" | sha256sum --check
           unzip -q /tmp/gradle.zip -d "$HOME"
           echo "$HOME/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
 
-      - name: Prepare optional release signing key
+      - name: Prepare distribution signing key
         env:
           KEYSTORE: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
         run: |
@@ -88,13 +93,13 @@ jobs:
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
         run: |
-          gradle wrapper --gradle-version "${GRADLE_VERSION}" --distribution-type bin
+          gradle wrapper --gradle-version "${GRADLE_VERSION}" --distribution-type bin --gradle-distribution-sha256-sum "$GRADLE_SHA256"
           ./gradlew --no-daemon --stacktrace :app:assembleRelease
           cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/LittleBit-Chat-arm64.apk"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$RUNNER_TEMP/LittleBit-Chat-arm64.apk"
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: app-release-apk
           path: ${{ runner.temp }}/LittleBit-Chat-arm64.apk
@@ -107,7 +112,7 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: app-release-apk
       - name: Prepare release assets
@@ -115,7 +120,7 @@ jobs:
           mv LittleBit-Chat-arm64.apk "LittleBit-Chat-${GITHUB_REF_NAME}-arm64.apk"
           sha256sum "LittleBit-Chat-${GITHUB_REF_NAME}-arm64.apk" > "LittleBit-Chat-${GITHUB_REF_NAME}-arm64.apk.sha256"
       - name: Attach signed APK
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           name: LittleBit Chat ${{ github.ref_name }}
           body: |

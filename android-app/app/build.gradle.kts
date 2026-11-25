@@ -22,7 +22,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.findByName("distribution") ?: signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("distribution")
         }
     }
 
@@ -100,6 +100,17 @@ android {
         }
     }
 }
+
+val verifyDistributionSigning by tasks.registering {
+    doLast {
+        val required = listOf("ANDROID_RELEASE_STORE_FILE", "ANDROID_RELEASE_STORE_PASSWORD",
+            "ANDROID_RELEASE_KEY_ALIAS", "ANDROID_RELEASE_KEY_PASSWORD")
+        val missing = required.filter { System.getenv(it).isNullOrBlank() }
+        check(missing.isEmpty()) { "Release signing requires: ${missing.joinToString()}" }
+        check(file(System.getenv("ANDROID_RELEASE_STORE_FILE")).isFile) { "Distribution keystore file is missing" }
+    }
+}
+tasks.matching { it.name == "preReleaseBuild" }.configureEach { dependsOn(verifyDistributionSigning) }
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
