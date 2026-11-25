@@ -42,7 +42,7 @@ class SettingsStore(context: Context) {
 
     var linkedModelNames by label("linked_model_names", "{}")
     var lastDocumentName by label("last_document_name", "")
-    var showPerformance by flag("show_performance", true)
+    var captionMode by label("caption_mode", if (prefs.getBoolean("show_performance", true)) "Minimal" else "Off")
     var batch by number("prefill_batch", 512)
     var flash by flag("flash_attention", true)
     var topK by number("top_k", 40)

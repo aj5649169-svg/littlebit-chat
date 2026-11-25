@@ -53,7 +53,8 @@ object ThinkBlocks {
     }
 
     /** Qwen3 Fast mode: suppress chain-of-thought by appending `/no_think`. */
-    fun withNoThink(prompt: String): String = "$prompt /no_think"
+    fun withNoThink(prompt: String, architecture: String?): String =
+        if (architecture in setOf("qwen3", "qwen3moe")) "$prompt /no_think" else prompt
 
     /**
      * Sentence-completeness guard for the speculative pre-warm: only a draft

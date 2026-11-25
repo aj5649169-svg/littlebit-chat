@@ -9,7 +9,12 @@
 #include <android/log.h>
 
 #include <llama.h>
+#include "jinja/parser.h"
+#include "json.h"
+#include <limits>
+#include <cstring>
 #include <ggml-backend.h>
+#include <gguf.h>
 
 #include <algorithm>
 #include <atomic>
@@ -53,6 +58,9 @@ struct NativeEngine {
     std::vector<llama_token> cached_tokens;
     std::chrono::steady_clock::time_point started;
     double ttft_ms = 0, prefill_rate = 0, decode_rate = 0;
+    int prompt_tokens = 0;
+    double prompt_ms = 0, gen_ms = 0;
+    std::string arch;
     llama_context_params params{};
     NativeEngine * draft = nullptr; // Kotlin holds both handles under the same engine mutex.
     bool owns_model = true;
@@ -275,6 +283,25 @@ bool hasVulkanComputeDevice() {
     return false;
 }
 
+// Decide before mapping model weights. A fatal vendor-driver signal cannot
+// be caught by the normal context/decode error path.
+bool useMaliGemmaCpu(const std::string & path) {
+    auto reg = ggml_backend_reg_by_name("Vulkan");
+    if (!reg) return false;
+    bool mali = false;
+    for (size_t i = 0; i < ggml_backend_reg_dev_count(reg); ++i) {
+        const char * name = ggml_backend_dev_description(ggml_backend_reg_dev_get(reg, i));
+        if (name && (std::strstr(name, "Mali") || std::strstr(name, "Immortalis"))) mali = true;
+    }
+    if (!mali) return false;
+    std::unique_ptr<gguf_context, decltype(&gguf_free)> header(
+        gguf_init_from_file(path.c_str(), {true, nullptr}), gguf_free);
+    if (!header) return false;
+    auto key = gguf_find_key(header.get(), "general.architecture");
+    return key >= 0 && gguf_get_kv_type(header.get(), key) == GGUF_TYPE_STRING &&
+           !std::strcmp(gguf_get_val_str(header.get(), key), "gemma4");
+}
+
 void callOnError(JNIEnv * env, jobject cb, const char * msg) {
     if (g_token_on_error == nullptr) return;
     jstring jmsg = utf8ToJString(env, std::string(msg));
@@ -390,6 +417,7 @@ int runSamplingLoop(JNIEnv * env, NativeEngine * e, jobject cb,
     const int n_ctx   = static_cast<int>(llama_n_ctx(e->ctx));
     const int n_vocab = static_cast<int>(llama_vocab_n_tokens(e->vocab));
 
+    __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "token_decode arch=%s layers=%d pos=%d", e->arch.c_str(), e->gpu_layers, e->n_past);
     const auto t0 = std::chrono::steady_clock::now();
     int n_gen = 0;
     int status = 0; // 0 = finished, 1 = stopped/aborted, 2 = context full
@@ -419,6 +447,11 @@ int runSamplingLoop(JNIEnv * env, NativeEngine * e, jobject cb,
         }
         llama_token_data_array cur{ candidates.data(), static_cast<size_t>(n_vocab), -1, false };
         llama_sampler_apply(chain, &cur);
+        if (!cur.data || cur.selected < 0 || static_cast<size_t>(cur.selected) >= cur.size) {
+            callOnError(env, cb, "token_decode: sampler returned no valid candidate");
+            status = -1;
+            break;
+        }
         const llama_token tok = cur.data[cur.selected].id;
         llama_sampler_accept(chain, tok);
 
@@ -428,7 +461,12 @@ int runSamplingLoop(JNIEnv * env, NativeEngine * e, jobject cb,
         }
 
         if (n_gen == 0) e->ttft_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - e->started).count();
-        const std::string piece = tokenToPiece(e->vocab, tok);
+        std::string piece = tokenToPiece(e->vocab, tok);
+        if (e->arch == "gemma4") {
+            const char * raw = llama_vocab_get_text(e->vocab, tok);
+            if (raw && !std::strcmp(raw, "<|channel>")) piece = "<think>";
+            if (raw && !std::strcmp(raw, "<channel|>")) piece = "</think>";
+        }
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         e->decode_rate = seconds > 0 ? (n_gen + 1) / seconds : 0;
         if (!piece.empty() && !appendUtf8Piece(env, cb, e->pending_utf8, piece)) {
@@ -455,6 +493,7 @@ int runSamplingLoop(JNIEnv * env, NativeEngine * e, jobject cb,
             }
             if (!decodeTokens(e, verified.data(), static_cast<int>(verified.size()), e->n_past, true)) {
                 clearHistory(e);
+                callOnError(env, cb, "token_decode: backend rejected the token batch");
                 status = -1;
                 break;
             }
@@ -477,6 +516,7 @@ int runSamplingLoop(JNIEnv * env, NativeEngine * e, jobject cb,
     if (reachedEog && !flushUtf8Tail(env, cb, e->pending_utf8)) status = -1;
 
     const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    e->gen_ms = elapsed * 1000.0;
     const double tps = elapsed > 0.0 ? static_cast<double>(n_gen) / elapsed : 0.0;
     env->CallVoidMethod(cb, g_token_on_complete, n_gen, tps);
     if (env->ExceptionCheck()) { env->ExceptionClear(); return -1; }
@@ -523,6 +563,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeLoadModel(
         JNIEnv * env, jobject, jstring jpath, jint n_ctx, jint n_threads, jint n_batch,
         jint n_gpu_layers, jboolean flash, jobject jprogress) {
     try {
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "model_load layers=%d ctx=%d threads=%d", n_gpu_layers, n_ctx, n_threads);
         const std::string path = toStdString(env, jpath);
         auto engine = std::make_unique<NativeEngine>();
 
@@ -538,7 +579,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeLoadModel(
         }
 
         const int requested_gpu_layers = std::max(0, static_cast<int>(n_gpu_layers));
-        const bool vulkan_ready = requested_gpu_layers > 0 && hasVulkanComputeDevice();
+        const bool vulkan_ready = requested_gpu_layers > 0 && hasVulkanComputeDevice() && !useMaliGemmaCpu(path);
         if (requested_gpu_layers > 0 && !vulkan_ready) {
             LOGE("Vulkan offload requested without a usable Vulkan compute device; falling back to CPU/KleidiAI");
         }
@@ -565,14 +606,18 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeLoadModel(
 
                 engine->model = llama_model_load_from_file(path.c_str(), mparams);
                 if (engine->model == nullptr) {
-                    throw std::runtime_error("llama_model_load_from_file returned null");
+                    throw std::runtime_error("model_load: llama_model_load_from_file returned null");
                 }
+                char arch[128] = {};
+                llama_model_meta_val_str(engine->model, "general.architecture", arch, sizeof(arch));
+                engine->arch = arch;
+                const bool gemma4 = engine->arch == "gemma4";
                 engine->vocab = llama_model_get_vocab(engine->model);
 
                 llama_context_params cparams = llama_context_default_params();
-                cparams.n_ctx           = n_ctx > 0 ? static_cast<uint32_t>(n_ctx) : 2048;
-                cparams.n_batch         = n_batch > 0 ? static_cast<uint32_t>(n_batch) : 512;
-                cparams.n_ubatch        = std::min(cparams.n_batch, layers > 0 ? 128u : 64u);
+                cparams.n_ctx           = std::clamp(n_ctx > 0 ? n_ctx : 2048, 128, 8192);
+                cparams.n_batch         = std::clamp(n_batch > 0 ? n_batch : 512, 1, std::min(512, static_cast<int>(cparams.n_ctx)));
+                cparams.n_ubatch        = std::min(cparams.n_batch, gemma4 ? 32u : (layers > 0 ? 128u : 64u));
                 cparams.op_offload = layers > 0;
                 cparams.offload_kqv = layers > 0;
                 if (layers == 0) {
@@ -585,7 +630,8 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeLoadModel(
                 cparams.n_threads       = n_threads;
                 cparams.n_threads_batch = n_threads;
 
-                if (layers > 0 && flash) {
+                __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "ctx_init arch=%s layers=%d ctx=%u ubatch=%u", arch, layers, cparams.n_ctx, cparams.n_ubatch);
+                if (layers > 0 && flash && !gemma4) {
                     cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO;
                     cparams.type_k = cparams.type_v = GGML_TYPE_Q8_0;
                     engine->ctx = llama_init_from_model(engine->model, cparams);
@@ -596,10 +642,21 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeLoadModel(
                     engine->ctx = llama_init_from_model(engine->model, cparams);
                 }
                 if (engine->ctx == nullptr) {
-                    throw std::runtime_error("failed to create llama context");
+                    throw std::runtime_error("ctx_init: failed to create llama context");
                 }
                 engine->params = cparams;
                 engine->gpu_layers = layers;
+                // Exercise the actual GPU graph before declaring the model ready.
+                if (layers > 0) {
+                    llama_token probe = llama_vocab_bos(engine->vocab);
+                    if (probe == LLAMA_TOKEN_NULL) probe = 0;
+                    const llama_token pair[] = {probe, probe};
+                    if (!decodeTokens(engine.get(), pair, 2, 0, false) ||
+                        !decodeTokens(engine.get(), &probe, 1, 2, false)) {
+                        throw std::runtime_error("prefill_decode/token_decode: Vulkan startup probe failed");
+                    }
+                    clearHistory(engine.get());
+                }
                 loaded = true;
                 break;
             } catch (const std::exception & e) {
@@ -646,6 +703,11 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeModelDesc(JNIEnv * env, jobject, j
     return utf8ToJString(env, std::string(buf));
 }
 
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_littlebit_chat_engine_LlamaJni_nativeArchitecture(JNIEnv *env, jobject, jlong handle) {
+    return env->NewStringUTF(reinterpret_cast<NativeEngine *>(handle)->arch.c_str());
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_com_littlebit_chat_engine_LlamaJni_nativeModelGpuLayers(JNIEnv *, jobject, jlong handle) {
     auto * e = reinterpret_cast<NativeEngine *>(handle);
@@ -668,7 +730,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeModelFtype(JNIEnv * env, jobject, 
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_littlebit_chat_engine_LlamaJni_nativeFormatChat(
-        JNIEnv * env, jobject, jlong handle, jstring jsystem, jobjectArray jroles, jobjectArray jcontents) {
+        JNIEnv * env, jobject, jlong handle, jstring jsystem, jobjectArray jroles, jobjectArray jcontents, jboolean thinking) {
     try {
         auto * e = reinterpret_cast<NativeEngine *>(handle);
         if (e == nullptr || e->model == nullptr) throw std::runtime_error("no model loaded");
@@ -682,6 +744,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeFormatChat(
             msgs.push_back({"system", system_prompt.c_str()});
         }
         const jsize n = env->GetArrayLength(jroles);
+        if (env->GetArrayLength(jcontents) != n) throw std::runtime_error("template_apply: mismatched messages");
         for (jsize i = 0; i < n; i++) {
             auto * jr = static_cast<jstring>(env->GetObjectArrayElement(jroles, i));
             auto * jc = static_cast<jstring>(env->GetObjectArrayElement(jcontents, i));
@@ -699,7 +762,30 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeFormatChat(
         // assistant turns contain <think> blocks (multi-turn crash on Qwen3).
         // Kotlin strips those blocks before formatting; the ChatML fallback
         // below is the second line of defence so multi-turn NEVER crashes.
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "template_apply arch=%s", e->arch.c_str());
         const char * tmpl = llama_model_chat_template(e->model, nullptr);
+        if (e->arch == "gemma4") {
+            if (!tmpl) throw std::runtime_error("template_apply: missing Gemma 4 chat template");
+            try {
+                jinja::lexer lexer;
+                auto lexed = lexer.tokenize(tmpl);
+                auto program = jinja::parse_from_tokens(lexed);
+                jinja::context ctx(lexed.source);
+                auto rows = common_json::array();
+                for (const auto & m : msgs) rows.push_back(common_json{{"role", m.role}, {"content", m.content}});
+                auto special = [&](llama_token id) {
+                    return id == LLAMA_TOKEN_NULL ? "" : llama_vocab_get_text(e->vocab, id);
+                };
+                common_json vars{{"messages", rows}, {"add_generation_prompt", true},
+                    {"enable_thinking", bool(thinking)}, {"bos_token", special(llama_vocab_bos(e->vocab))},
+                    {"eos_token", special(llama_vocab_eos(e->vocab))}};
+                jinja::global_from_json(ctx, vars, false);
+                jinja::runtime runtime(ctx);
+                return utf8ToJString(env, jinja::runtime::gather_string_parts(runtime.execute(program))->as_string().str());
+            } catch (const std::exception & err) {
+                throw std::runtime_error(std::string("template_apply: Gemma 4: ") + err.what());
+            }
+        }
         if (tmpl != nullptr) {
             try {
                 int32_t len = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true, nullptr, 0);
@@ -707,7 +793,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeFormatChat(
                 std::vector<char> buf(static_cast<size_t>(len) + 16);
                 len = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true,
                                                 buf.data(), static_cast<int32_t>(buf.size()));
-                if (len < 0) throw std::runtime_error("chat template failed");
+                if (len < 0 || static_cast<size_t>(len) >= buf.size()) throw std::runtime_error("chat template length changed");
                 return utf8ToJString(env, std::string(buf.data(), static_cast<size_t>(len)));
             } catch (const std::exception & ex) {
                 LOGE("chat template failed (%s); falling back to ChatML", ex.what());
@@ -748,6 +834,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
         e->started = std::chrono::steady_clock::now();
         e->ttft_ms = 0;
         e->decode_rate = 0;
+        e->prompt_tokens = 0; e->prompt_ms = 0; e->gen_ms = 0;
         e->stop.store(false);
         // A fresh prompt owns a fresh byte stream. Only a same-turn
         // nativeContinueGenerate may finish a code point from the prior call.
@@ -755,15 +842,17 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
         const std::string prompt = toStdString(env, jprompt);
         const int n_ctx   = static_cast<int>(llama_n_ctx(e->ctx));
         const int logical_batch = static_cast<int>(llama_n_batch(e->ctx));
-        const int n_batch = std::min(e->gpu_layers > 0 ? 128 : 64, logical_batch);
+        const int n_batch = std::min(static_cast<int>(llama_n_ubatch(e->ctx)), logical_batch);
         const int n_vocab = static_cast<int>(llama_vocab_n_tokens(e->vocab));
 
         // Tokenize the fully-templated prompt (special tokens parsed, BOS left to the template).
+        if (prompt.size() > static_cast<size_t>(INT32_MAX - 8)) throw std::runtime_error("template_apply: prompt too large");
         std::vector<llama_token> prompt_tokens(prompt.size() + 8);
         int n_prompt = llama_tokenize(e->vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()),
                                       prompt_tokens.data(), static_cast<int32_t>(prompt_tokens.size()),
                                       false, true);
         if (n_prompt < 0) {
+            if (n_prompt == INT32_MIN) throw std::runtime_error("template_apply: token count overflow");
             prompt_tokens.resize(static_cast<size_t>(-n_prompt));
             n_prompt = llama_tokenize(e->vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()),
                                       prompt_tokens.data(), static_cast<int32_t>(prompt_tokens.size()),
@@ -808,6 +897,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
         e->cached_tokens.resize(lcp);
         e->n_past = lcp;
         const auto prefill_start = std::chrono::steady_clock::now();
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "prefill_decode arch=%s layers=%d ctx=%d batch=%d ubatch=%d", e->arch.c_str(), e->gpu_layers, n_ctx, logical_batch, n_batch);
         e->in_prefill.store(true);
         env->CallVoidMethod(cb, g_prefill, lcp, n_prompt);
         if (env->ExceptionCheck()) {
@@ -837,7 +927,8 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
             const int rc = llama_process(e->ctx, LLAMA_PROCESS_TYPE_DECODE, b);
             llama_batch_ext_free(b);
             if (rc != 0) {
-                callOnError(env, cb, "prompt processing failed (out of memory or aborted)");
+                auto detail = "prefill_decode: rc=" + std::to_string(rc) + " chunk=" + std::to_string(chunk);
+                callOnError(env, cb, detail.c_str());
                 failed = true;
                 break;
             }
@@ -855,6 +946,8 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
 
         e->in_prefill.store(false);
         const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - prefill_start).count();
+        e->prompt_tokens = e->n_past - lcp;
+        e->prompt_ms = secs * 1000.0;
         e->prefill_rate = secs > 0 ? (e->n_past - lcp) / secs : 0;
         if (failed) {
             llama_memory_clear(mem, false);
@@ -906,6 +999,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeContinueGenerate(
         e->started = std::chrono::steady_clock::now();
         e->ttft_ms = 0;
         e->decode_rate = 0;
+        e->prompt_tokens = 0; e->prompt_ms = 0; e->gen_ms = 0;
         e->stop.store(false);
         const int n_vocab = static_cast<int>(llama_vocab_n_tokens(e->vocab));
 
@@ -976,9 +1070,10 @@ extern "C" JNIEXPORT jdoubleArray JNICALL
 Java_com_littlebit_chat_engine_LlamaJni_nativeMetrics(JNIEnv * env, jobject, jlong handle) {
     auto * e = reinterpret_cast<NativeEngine *>(handle);
     const double values[] = {e->ttft_ms, e->prefill_rate, static_cast<double>(e->n_past),
-                             static_cast<double>(llama_n_ctx(e->ctx)), e->decode_rate};
-    auto result = env->NewDoubleArray(5);
-    if (result) env->SetDoubleArrayRegion(result, 0, 5, values);
+                             static_cast<double>(llama_n_ctx(e->ctx)), e->decode_rate,
+                             static_cast<double>(e->prompt_tokens), e->prompt_ms, e->gen_ms};
+    auto result = env->NewDoubleArray(8);
+    if (result) env->SetDoubleArrayRegion(result, 0, 8, values);
     return result;
 }
 
@@ -988,6 +1083,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeBenchmarkContext(JNIEnv *env, jobj
     auto * parent = reinterpret_cast<NativeEngine *>(handle);
     try {
         auto isolated = std::make_unique<NativeEngine>();
+        isolated->arch = parent->arch;
         isolated->model = parent->model;
         isolated->vocab = parent->vocab;
         isolated->owns_model = false;

@@ -197,7 +197,7 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 settings.font = it.substringAfter(' ').removeSuffix("sp").toInt()
             }
                     SwitchRow("Haptics", "Feedback on chat actions", settings.haptics) { settings.haptics = it }
-                    SwitchRow("Performance caption", "Tap the speed below a reply for details", settings.showPerformance) { settings.showPerformance = it }
+                    Choices("Performance caption", listOf("Off", "Minimal", "Detailed"), settings.captionMode) { settings.captionMode = it }
             } }
             item { SettingPanel("Persona & Prompt") {
                 val presets = mapOf("Concise" to SettingsStore.DEFAULT_SYSTEM_PROMPT,
@@ -300,12 +300,12 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                         onChangeFinished = { settings.dryMultiplier = dry.toDouble() },
                     )
                 }
-                item { Choices("Prefill batch · reload model", listOf("256","512","1024"), settings.batch.toString()) { settings.batch = it.toInt() } }
+                item { Choices("Prefill batch · reload model", listOf("256","512"), settings.batch.coerceAtMost(512).toString()) { settings.batch = it.toInt() } }
                 item { SwitchRow("Vulkan Flash Attention", "Try Q8 KV cache on reload. CPU uses F16.", settings.flash) { settings.flash = it } }
                 item { Choices("Top K", listOf("0","20","40","80"), settings.topK.toString()) { settings.topK = it.toInt() } }
                 item { Choices("Top P (%)", listOf("80","90","95","100"), settings.topPercent.toString()) { settings.topPercent = it.toInt() } }
                 item { Choices("Min P (%)", listOf("0","5","10"), settings.minPercent.toString()) { settings.minPercent = it.toInt() } }
-                item { Choices("Output token limit", listOf("256","512","1024","2048","8192"), settings.maxTokens.toString()) { settings.maxTokens = it.toInt() } }
+                item { Choices("Output token limit", com.littlebit.chat.engine.outputLimits.map { it.toString() }, settings.maxTokens.toString()) { settings.maxTokens = it.toInt() } }
             }
             item(key = "footer") { Spacer(Modifier.height(16.dp)) }
         }

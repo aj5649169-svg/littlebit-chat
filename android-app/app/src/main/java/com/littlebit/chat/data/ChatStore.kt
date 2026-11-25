@@ -1,5 +1,6 @@
 package com.littlebit.chat.data
 
+import com.littlebit.chat.engine.ReplyTiming
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -12,7 +13,8 @@ import java.util.UUID
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class ChatMessage(val role: String, val content: String, val fast: Boolean = false, val cutOff: Boolean = false)
+data class ChatMessage(val role: String, val content: String, val fast: Boolean = false, val cutOff: Boolean = false,
+                       val timing: ReplyTiming? = null, val backend: String = "")
 class ChatSession(val id: String, title: String, updatedAt: Long, val messages: MutableList<ChatMessage>, pinned: Boolean = false) {
     var title by mutableStateOf(title)
     var updatedAt by mutableStateOf(updatedAt)
@@ -39,7 +41,10 @@ class ChatStore(private val file: File) {
                 for (j in 0 until rows.length()) {
                     val m = rows.getJSONObject(j)
                     if (m.getString("role") == "assistant" && m.getString("content").isBlank()) continue
-                    messages.add(ChatMessage(m.getString("role"), m.getString("content"), m.optBoolean("fast"), m.optBoolean("cutOff")))
+                    messages.add(ChatMessage(m.getString("role"), m.getString("content"), m.optBoolean("fast"), m.optBoolean("cutOff"),
+                        m.optJSONObject("timing")?.let { t -> ReplyTiming(t.getInt("promptTokens"), t.getDouble("promptMs"),
+                            t.getInt("tokens"), t.getDouble("genMs"), t.getDouble("firstMs"), t.getInt("used"), t.getInt("capacity")) },
+                        m.optString("backend")))
                 }
                 sessions.add(ChatSession(
                     id = o.getString("id"),
@@ -76,6 +81,12 @@ class ChatStore(private val file: File) {
                     mo.put("cutOff", m.cutOff)
                     mo.put("role", m.role)
                     mo.put("content", m.content)
+                    m.timing?.let { t ->
+                        mo.put("backend", m.backend)
+                        mo.put("timing", JSONObject().put("promptTokens", t.promptTokens).put("promptMs", t.promptMs)
+                            .put("tokens", t.tokens).put("genMs", t.genMs).put("firstMs", t.firstMs)
+                            .put("used", t.used).put("capacity", t.capacity))
+                    }
                     messages.put(mo)
                 }
                 o.put("messages", messages)

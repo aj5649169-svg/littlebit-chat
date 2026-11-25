@@ -30,8 +30,8 @@ android {
         applicationId = "com.littlebit.chat"
         minSdk = 28          // matches -DANDROID_PLATFORM=android-28 in scripts/build-android.sh
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.1.2-v1.1-engine"
+        versionCode = 8
+        versionName = "1.1.3"
 
         ndk {
             // Native engine is arm64-only: KleidiAI kernels + LittleBit path are built for arm64-v8a.
@@ -112,7 +112,13 @@ val verifyDistributionSigning by tasks.registering {
 }
 tasks.matching { it.name == "preReleaseBuild" }.configureEach { dependsOn(verifyDistributionSigning) }
 
+// The signed APK workflow invokes assembleRelease. Run the JVM regression suite
+// on that entry point so a failed test cannot produce a distribution artifact.
+tasks.matching { it.name == "assembleRelease" }.configureEach { dependsOn("testDebugUnitTest") }
+
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.mockito:mockito-core:5.14.2")
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")

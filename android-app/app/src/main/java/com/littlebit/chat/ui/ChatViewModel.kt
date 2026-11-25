@@ -15,7 +15,8 @@ import com.littlebit.chat.data.ChatSession
 import com.littlebit.chat.data.ChatStore
 import com.littlebit.chat.data.ModelFiles
 import com.littlebit.chat.data.SettingsStore
-import com.littlebit.chat.engine.LlamaEngine
+import com.littlebit.chat.engine.*
+import kotlinx.coroutines.asCoroutineDispatcher
 import com.littlebit.chat.engine.ThinkBlocks
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -36,12 +37,15 @@ import kotlinx.coroutines.sync.withLock
  */
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val engine = LlamaEngine()
+    private val inference = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+        Thread(null, task, "LittleBit inference", 8L * 1024 * 1024)
+    }.asCoroutineDispatcher()
+    private val engine: LlmEngine = LlamaEngine()
     val settings = SettingsStore(app)
     private val store = ChatStore(File(app.filesDir, "chats/chats.json"))
 
     // ------------------------------------------------------------------ model
-    var modelInfo by mutableStateOf<LlamaEngine.ModelInfo?>(null)
+    var modelInfo by mutableStateOf<ModelInfo?>(null)
         private set
     var modelName by mutableStateOf<String?>(null)
         private set
@@ -442,20 +446,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             modelName = null
             activeModelPath = null
 
-            val info = engineMutex.withLock {
-                engine.loadModel(
-                    path = file.absolutePath,
-                    contextSize = settings.contextSize,
-                    threads = settings.threads,
-                    nGpuLayers = if (settings.vulkanOffload) settings.vulkanGpuLayers else 0,
-                    batch = settings.batch, flash = settings.flash,
-                    onProgress = { progress ->
-                        check(!cancelLoad) { "Load cancelled" }
-                        loadProgress = 0.35f + (progress.coerceIn(0f, 1f) * 0.65f)
-                    },
-                ).also {
-                    if (cancelLoad) { engine.unload(); error("Load cancelled") }
-                    capacity = engine.metrics()[3].toInt()
+            val info = kotlinx.coroutines.withContext(inference) {
+                engineMutex.withLock {
+                    engine.loadModel(
+                        path = file.absolutePath,
+                        contextSize = settings.contextSize,
+                        threads = settings.threads,
+                        nGpuLayers = if (settings.vulkanOffload) settings.vulkanGpuLayers else 0,
+                        batch = settings.batch, flash = settings.flash,
+                        onProgress = { progress ->
+                            check(!cancelLoad) { "Load cancelled" }
+                            loadProgress = 0.35f + (progress.coerceIn(0f, 1f) * 0.65f)
+                        },
+                    ).also {
+                        if (cancelLoad) { engine.unload(); error("Load cancelled") }
+                        capacity = engine.metrics()[3].toInt()
+                    }
                 }
             }
             cacheSession = null
@@ -532,7 +538,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         stopRequested = false
         foreground("Generating…", ::stopGeneration)
         isGenerating = true
-        viewModelScope.launch(Dispatchers.Default) {
+        viewModelScope.launch(inference) {
             var appended = false
             try {
                 cancelPrewarmSuspend()
@@ -595,7 +601,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         stopRequested = false
         foreground("Generating…", ::stopGeneration)
         isGenerating = true
-        viewModelScope.launch(Dispatchers.Default) {
+        viewModelScope.launch(inference) {
             try {
                 cancelPrewarmSuspend()
                 engineMutex.withLock {
@@ -625,14 +631,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val history = prior.map { m ->
             m.role to when {
                 m.role == "assistant" -> ThinkBlocks.strip(m.content)
-                m.fast -> ThinkBlocks.withNoThink(m.content)
+                m.fast -> ThinkBlocks.withNoThink(m.content, modelInfo?.architecture)
                 else -> m.content
             }
         }.toMutableList()
-        history.add("user" to if (fast) ThinkBlocks.withNoThink(userText) else userText)
+        history.add("user" to if (fast) ThinkBlocks.withNoThink(userText, modelInfo?.architecture) else userText)
         var trimmed = false
         while (true) {
-            val prompt = engine.formatChat(system, history) + tail
+            val prompt = engine.formatChat(system, history, thinking = !fast) + tail
             val size = engine.promptSize(prompt)
             if (size <= capacity - minOf(128, capacity / 8) || history.size == 1) {
                 require(size in 1..(capacity - 4)) { "This message exceeds the loaded context. Shorten it or reload with a larger context." }
@@ -649,7 +655,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun samplingParams(maxTokens: Int = settings.maxTokens) = LlamaEngine.SamplingParams(
+    private fun samplingParams(maxTokens: Int = settings.maxTokens) = SamplingParams(
         temperature = settings.temperature, repeatPenalty = settings.repeatPenalty,
         dryMultiplier = settings.dryMultiplier, maxTokens = maxTokens,
         topK = settings.topK, topP = settings.topPercent / 100.0, minP = settings.minPercent / 100.0)
@@ -661,6 +667,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         used = m[2].toInt()
         capacity = m[3].toInt()
         lastTps = m[4]
+    }
+
+    // Caller owns engineMutex. Reopen SAF documents for the entire reload.
+    private fun retryOnCpu() {
+        val source = requireNotNull(activeModelPath)
+        engine.unload()
+        modelInfo = null
+        draftName = null
+        cacheSession = null
+        fun load(path: String) = engine.loadModel(path, capacity, settings.threads, 0, settings.batch, false) {
+            check(!stopRequested) { "CPU retry cancelled" }
+        }
+        modelInfo = if (source.startsWith("content://")) {
+            requireNotNull(getApplication<Application>().contentResolver.openFileDescriptor(Uri.parse(source), "r")).use {
+                load("/proc/self/fd/${it.fd}")
+            }
+        } else load(source)
     }
 
     private suspend fun generateReply(prompt: String, draft: SpeculativeDraft?, seed: String = "", replaceIndex: Int? = null) = kotlinx.coroutines.coroutineScope {
@@ -703,46 +726,64 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 nextSave = now + 2000L
             }
         }
+        val limit = outputBudget(settings.maxTokens, capacity, engine.promptSize(prompt))
+        val params = samplingParams(limit)
         val result = try { when {
-            draft == null -> engine.generate(prompt, samplingParams(), progress, accept)
+            draft == null -> {
+                val first = engine.generate(prompt, params, progress, accept)
+                val initialDecodeFailure = first.error?.startsWith("prefill_decode") == true ||
+                    (first.tokens <= 1 && first.error?.startsWith("token_decode") == true)
+                if (first.status < 0 && initialDecodeFailure && !stopRequested && (modelInfo?.gpuLayers ?: 0) > 0) {
+                    chatError = "${first.error}. Retrying on CPU · KleidiAI."
+                    output.setLength(0)
+                    output.append(seed)
+                    rawStream = seed
+                    isPrefilling = true
+                    retryOnCpu()
+                    engine.generate(prompt, params, progress, accept)
+                } else first
+            }
             draft.isComplete -> requireNotNull(draft.result)
             else -> {
-                val remaining = (settings.maxTokens - draft.tokens).coerceAtLeast(1)
+                val remaining = (limit - draft.tokens).coerceAtLeast(1)
                 val continued = engine.continueGenerate(samplingParams(remaining), accept)
                 if (continued.status < 0) {
                     output.setLength(0)
                     output.append(seed)
                     rawStream = seed
                     engine.reset()
-                    engine.generate(prompt, samplingParams(), progress, accept)
-                } else continued.copy(tokens = continued.tokens + draft.tokens)
+                    engine.generate(prompt, params, progress, accept)
+                } else continued.copy(tokens = continued.tokens + draft.tokens,
+                    timing = draft.result?.timing?.followedBy(continued.timing) ?: continued.timing)
             }
         } } catch (e: Exception) {
             if (e is CancellationException) throw e
-            LlamaEngine.GenerateResult(-1, pieces, 0.0, output.toString(), e.message)
+            GenerateResult(-1, pieces, 0.0, output.toString(), e.message)
         }
         saveJob?.join()
-        updateMetrics()
+        if (engine.isLoaded) updateMetrics()
         rawStream = output.toString()
         lastTokens = result.tokens
         lastTps = result.tokensPerSec
-        if (result.status < 0) chatError = result.error ?: "Generation failed"
+        if (result.status < 0) chatError = "${result.error ?: "token_decode: generation failed"} " +
+            "[${modelInfo?.architecture ?: "unknown"} · $activeBackendLabel · ctx $capacity · ${settings.threads} threads]"
+        val timing = replaceIndex?.let { currentMessages[it].timing }?.followedBy(result.timing) ?: result.timing
         val message = ChatMessage("assistant", rawStream, cutOff = result.isStopped || result.isContextFull ||
-            result.tokens >= settings.maxTokens)
+            result.tokens >= limit, timing = timing, backend = activeBackendLabel)
         if (rawStream.isNotBlank()) {
             if (replaceIndex == null) currentMessages.add(message) else currentMessages[replaceIndex] = message
         }
         syncActiveToStore()
     }
 
-    @Volatile private var activeBenchmark: LlamaEngine? = null
+    @Volatile private var activeBenchmark: LlmEngine? = null
 
     fun benchmark() {
         if (busy || !isLoaded) return
         stopRequested = false
         foreground("Benchmarking…") { stopRequested = true; activeBenchmark?.stop() }
         benchmarking = true
-        viewModelScope.launch(Dispatchers.Default) {
+        viewModelScope.launch(inference) {
             try {
                 cancelPrewarmSuspend()
                 engineMutex.withLock {
@@ -752,8 +793,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         val threads = settings.threads
                         bench.setThreads(threads)
                         val prompt = engine.formatChat(SettingsStore.DEFAULT_SYSTEM_PROMPT,
-                            listOf("user" to ThinkBlocks.withNoThink("Explain how rain forms, step by step.")))
-                        val result = bench.generate(prompt, LlamaEngine.SamplingParams(maxTokens = 96, seed = 42),
+                            listOf("user" to ThinkBlocks.withNoThink("Explain how rain forms, step by step.", modelInfo?.architecture)))
+                        val result = bench.generate(prompt, SamplingParams(maxTokens = 96, seed = 42),
                             prefill = { _, _ -> if (stopRequested) bench.stop() })
                         check(result.status == 0) { result.error ?: "Benchmark interrupted" }
                         val m = bench.metrics()
@@ -787,7 +828,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val draft = SpeculativeDraft(prompt = text, sampling = samplingParams())
         speculative = draft
         preWarming = true
-        prewarmJob = viewModelScope.launch(Dispatchers.Default) {
+        prewarmJob = viewModelScope.launch(inference) {
             engineMutex.withLock {
                 // 2 threads keeps the keyboard smooth and the phone cool.
                 engine.setThreads(2)
@@ -841,14 +882,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         finishForeground()
         runCatching { engine.stop() }
         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { engineMutex.withLock { engine.unload(); draftName = null } }
+        inference.close()
         super.onCleared()
     }
 
     private class SpeculativeDraft(
         val prompt: String,
-        val sampling: LlamaEngine.SamplingParams,
+        val sampling: SamplingParams,
         var formatted: String = "",
-        var result: LlamaEngine.GenerateResult? = null,
+        var result: GenerateResult? = null,
         val buffer: StringBuilder = StringBuilder(),
         @Volatile var tokens: Int = 0,
         @Volatile var isComplete: Boolean = false,

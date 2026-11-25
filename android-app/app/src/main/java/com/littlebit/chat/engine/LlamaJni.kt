@@ -23,6 +23,7 @@ internal object LlamaJni {
         progress: LlamaEngine.ProgressCallback?,
     ): Long
 
+    external fun nativeArchitecture(handle: Long): String
     external fun nativeModelDesc(handle: Long): String
     external fun nativeModelGpuLayers(handle: Long): Int
     external fun nativeModelSizeBytes(handle: Long): Long
@@ -33,6 +34,7 @@ internal object LlamaJni {
         system: String,
         roles: Array<String>,
         contents: Array<String>,
+        thinking: Boolean,
     ): String
 
     /** Returns 0 finished, 1 stopped, 2 context full, -1 error. */

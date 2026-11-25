@@ -13,43 +13,7 @@ package com.littlebit.chat.engine
  * [generate]/[continueGenerate] may run at a time — the ViewModel guards
  * engine access with a Mutex.
  */
-class LlamaEngine {
-
-    data class ModelInfo(
-        val description: String,
-        val sizeBytes: Long,
-        val fileType: String,
-        val gpuLayers: Int = 0,
-    )
-
-    data class SamplingParams(
-        val temperature: Double = 0.7,
-        val topP: Double = 0.90,
-        val minP: Double = 0.05,
-        val topK: Int = 40,               // 0 = disabled
-        val repeatPenalty: Double = 1.1,
-        val dryMultiplier: Double = 0.0, // 0 = disabled
-        val maxTokens: Int = 1024,
-        val seed: Long = -1,             // <0 = random
-    )
-
-    data class GenerateResult(
-        val status: Int,
-        val tokens: Int,
-        val tokensPerSec: Double,
-        val output: String,
-        val error: String? = null,
-    ) {
-        val isStopped get() = status == STATUS_STOPPED
-        val isContextFull get() = status == STATUS_CONTEXT_FULL
-
-        companion object {
-            const val STATUS_OK = 0
-            const val STATUS_STOPPED = 1
-            const val STATUS_CONTEXT_FULL = 2
-            const val STATUS_ERROR = -1
-        }
-    }
+class LlamaEngine : LlmEngine {
 
     fun interface ProgressCallback {
         fun onProgress(progress: Float)
@@ -64,7 +28,7 @@ class LlamaEngine {
 
     @Volatile private var handle: Long = 0
 
-    val isLoaded: Boolean get() = handle != 0L
+    override val isLoaded: Boolean get() = handle != 0L
 
     @Volatile
     var isGenerating: Boolean = false
@@ -78,17 +42,17 @@ class LlamaEngine {
      * Blocks. Loads a GGUF model (any standard quant or LittleBit Q1_0).
      * [nGpuLayers] is plumbed for Vulkan GPU offload (v0.2); keep it 0 on CPU.
      */
-    fun loadModel(
+    override fun loadModel(
         path: String,
-        contextSize: Int = 2048,
-        threads: Int = 4,
-        nGpuLayers: Int = 99,
-        batch: Int = 512,
-        flash: Boolean = true,
-        onProgress: ProgressCallback? = null,
+        contextSize: Int,
+        threads: Int,
+        nGpuLayers: Int,
+        batch: Int,
+        flash: Boolean,
+        onProgress: ((Float) -> Unit)?,
     ): ModelInfo {
         check(handle == 0L) { "A model is already loaded. Unload it first." }
-        val h = LlamaJni.nativeLoadModel(path, contextSize, threads, batch, nGpuLayers, flash, onProgress)
+        val h = LlamaJni.nativeLoadModel(path, contextSize, threads, batch, nGpuLayers, flash, onProgress?.let { ProgressCallback(it) })
         check(h != 0L) { "nativeLoadModel returned 0" }
         handle = h
         return ModelInfo(
@@ -96,30 +60,31 @@ class LlamaEngine {
             sizeBytes = LlamaJni.nativeModelSizeBytes(h),
             fileType = LlamaJni.nativeModelFtype(h),
             gpuLayers = LlamaJni.nativeModelGpuLayers(h),
+            architecture = LlamaJni.nativeArchitecture(h),
         )
     }
 
-    fun metrics() = LlamaJni.nativeMetrics(handle)
-    fun benchmarkContext() = LlamaEngine().also {
+    override fun metrics() = LlamaJni.nativeMetrics(handle)
+    override fun benchmarkContext() = LlamaEngine().also {
         it.handle = LlamaJni.nativeBenchmarkContext(handle)
         check(it.isLoaded) { "Could not allocate a benchmark context" }
     }
-    fun reset() = LlamaJni.nativeReset(handle)
-    fun promptSize(prompt: String) = LlamaJni.nativePromptSize(handle, prompt)
+    override fun reset() = LlamaJni.nativeReset(handle)
+    override fun promptSize(prompt: String) = LlamaJni.nativePromptSize(handle, prompt)
 
-    fun setThreads(threads: Int) {
+    override fun setThreads(threads: Int) {
         if (handle != 0L) LlamaJni.nativeSetThreads(handle, threads)
     }
 
     private var draft: LlamaEngine? = null
 
-    fun clearDraft() {
+    override fun clearDraft() {
         if (handle != 0L) LlamaJni.nativeAttachDraft(handle, 0)
         draft?.unload()
         draft = null
     }
 
-    fun attachDraft(path: String, threads: Int, progress: ProgressCallback) {
+    override fun attachDraft(path: String, threads: Int, progress: (Float) -> Unit) {
         clearDraft()
         val candidate = LlamaEngine()
         try {
@@ -131,7 +96,7 @@ class LlamaEngine {
         }
     }
 
-    @Synchronized fun unload() {
+    @Synchronized override fun unload() {
         val h = handle
         if (h != 0L) {
             clearDraft()
@@ -141,24 +106,24 @@ class LlamaEngine {
     }
 
     /** Signal the native loop to stop at the next token. Safe to call anytime. */
-    @Synchronized fun stop() {
+    @Synchronized override fun stop() {
         if (handle != 0L) LlamaJni.nativeStop(handle)
     }
 
     /** Formats the conversation with the model's own GGUF chat template. */
-    fun formatChat(systemPrompt: String, messages: List<Pair<String, String>>): String {
+    override fun formatChat(systemPrompt: String, messages: List<Pair<String, String>>, thinking: Boolean): String {
         check(handle != 0L) { "No model loaded" }
         val roles = messages.map { it.first }.toTypedArray()
         val contents = messages.map { it.second }.toTypedArray()
-        return LlamaJni.nativeFormatChat(handle, systemPrompt, roles, contents)
+        return LlamaJni.nativeFormatChat(handle, systemPrompt, roles, contents, thinking)
     }
 
     /** Blocking generation loop. Call from a background thread. */
-    fun generate(
+    override fun generate(
         prompt: String,
-        params: SamplingParams = SamplingParams(),
-        prefill: (Int, Int) -> Unit = { _, _ -> },
-        onToken: (String) -> Unit = {},
+        params: SamplingParams,
+        prefill: (Int, Int) -> Unit,
+        onToken: (String) -> Unit,
     ): GenerateResult = runGeneration(prompt, params, onToken, prefill)
 
     /**
@@ -166,9 +131,9 @@ class LlamaEngine {
      * Used after flushing a speculative pre-warm draft; falls back to
      * [generate] if the native side reports an error.
      */
-    fun continueGenerate(
-        params: SamplingParams = SamplingParams(),
-        onToken: (String) -> Unit = {},
+    override fun continueGenerate(
+        params: SamplingParams,
+        onToken: (String) -> Unit,
     ): GenerateResult = runGeneration(null, params, onToken)
 
     private fun runGeneration(
@@ -214,7 +179,9 @@ class LlamaEngine {
                     params.maxTokens, params.seed, cb,
                 )
             }
-            GenerateResult(status, tokens, tps, output.toString(), error)
+            val m = metrics()
+            val timing = ReplyTiming(m[5].toInt(), m[6], tokens, m[7], m[0], m[2].toInt(), m[3].toInt())
+            GenerateResult(status, tokens, tps, output.toString(), error, timing)
         } finally {
             isGenerating = false
         }

@@ -120,9 +120,15 @@ add_subdirectory(${LLAMA_CPP_DIR} ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp)
 # ---------------------------------------------------------------------------
 # JNI bridge
 # ---------------------------------------------------------------------------
-add_library(llama_jni SHARED llama_jni.cpp)
+set(JINJA_DIR "${LLAMA_CPP_DIR}/common/jinja")
+add_library(llama_jni SHARED llama_jni.cpp
+    ${JINJA_DIR}/lexer.cpp ${JINJA_DIR}/parser.cpp ${JINJA_DIR}/runtime.cpp
+    ${JINJA_DIR}/value.cpp ${JINJA_DIR}/string.cpp
+    ${LLAMA_CPP_DIR}/common/unicode.cpp ${LLAMA_CPP_DIR}/common/json.cpp)
+target_compile_features(llama_jni PRIVATE cxx_std_17)
 
 target_include_directories(llama_jni PRIVATE
+    ${LLAMA_CPP_DIR}/common ${LLAMA_CPP_DIR}/vendor
     ${LLAMA_CPP_DIR}/include
     ${LLAMA_CPP_DIR}/ggml/include)
 
