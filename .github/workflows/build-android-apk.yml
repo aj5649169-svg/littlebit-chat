@@ -109,8 +109,23 @@ jobs:
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
         run: |
+          set -o pipefail
           gradle wrapper --gradle-version "${GRADLE_VERSION}" --distribution-type bin --gradle-distribution-sha256-sum "$GRADLE_SHA256"
-          ./gradlew --no-daemon --stacktrace :app:assembleRelease
+          ./gradlew --no-daemon --stacktrace :app:assembleRelease 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+
+      - name: Summarize Gradle failure
+        if: failure()
+        run: |
+          log="$RUNNER_TEMP/gradle.log"
+          [[ -f "$log" ]] || exit 0
+          python3 - "$log" <<'PY'
+          import sys, urllib.parse
+          lines = open(sys.argv[1], errors="replace").read().splitlines()
+          marks = [i for i, l in enumerate(lines) if "FAILURE:" in l]
+          start = max(0, marks[-1] - 70) if marks else max(0, len(lines) - 120)
+          chunk = "\n".join(l.rstrip() for l in lines[start:start + 120])[:6000]
+          print("::error title=Gradle failure::" + urllib.parse.quote(chunk, safe=" ,.:;-_()[]{}<>='\"|&%#@!?*+$`/"))
+          PY
 
       - name: Verify offline and standard release APKs (16 KiB ELF pages)
         env:
