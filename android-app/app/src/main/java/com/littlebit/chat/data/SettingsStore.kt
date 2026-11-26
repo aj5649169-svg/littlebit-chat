@@ -66,6 +66,15 @@ class SettingsStore(context: Context) {
     var customPrompt by label("custom_prompt", systemPrompt)
     var persona by label("persona", if (systemPrompt == DEFAULT_SYSTEM_PROMPT) "Concise" else "Custom")
 
+    /** Opt-in on-disk KV cache. Off by default: a 4K F16 cache can be hundreds of MB. */
+    var saveKvCache by flag("save_kv_cache", false)
+
+    /** Standard-edition cloud API (the offline build never reads these for networking). */
+    var cloudMode by flag("cloud_mode", false)
+    var cloudPreset by label("cloud_preset", "OpenRouter")
+    var cloudEndpoint by label("cloud_endpoint", "https://openrouter.ai/api/v1")
+    var cloudModel by label("cloud_model", "")
+
     /** CPU threads 2–8. Default 4 = optimal for Big.LITTLE performance cores. */
     var threads: Int
         get() = prefs.getInt("threads", 4)

@@ -12,8 +12,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -36,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -75,6 +78,7 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
             runCatching { vm.diagnosticFile.readText() }.getOrDefault("")
         }
     }
+    LaunchedEffect(settings.saveKvCache) { vm.refreshKvCacheSize() }
     var totalRam by remember { mutableLongStateOf(0L) }
     var availRam by remember { mutableLongStateOf(0L) }
     LaunchedEffect(Unit) {
@@ -203,6 +207,20 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                         }
                     }
                 }
+                SwitchRow(
+                    title = "Save KV cache on disk",
+                    subtitle = "Opt-in. Reuses the prompt cache between turns; only the two most recent chats are kept.",
+                    checked = settings.saveKvCache,
+                ) { enabled ->
+                    settings.saveKvCache = enabled
+                    vm.invalidateDraft()
+                    vm.refreshKvCacheSize()
+                }
+                if (settings.saveKvCache) {
+                    TextButton(enabled = !vm.busy, onClick = vm::clearKvCache) {
+                        Text("Clear KV cache (${com.littlebit.chat.engine.KvCacheStore.formatBytes(vm.kvCacheBytes)})")
+                    }
+                }
             } }
             if (vm.isLoaded && reloadNeeded) item { SettingPanel("Engine settings changed") {
                 TextButton(enabled = !vm.busy, onClick = vm::reloadLastModel) { Text("Reload now") }
@@ -213,6 +231,7 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 Choices("Auto-unload in background", listOf("Off","After 1 min","Immediately"), settings.unloadPolicy) { settings.unloadPolicy = it }
                 SwitchRow("Keep screen awake", "During generation", settings.keepAwake) { settings.keepAwake = it }
             } }
+            if (vm.cloudSupported) item { SettingPanel("Cloud API · Standard edition") { CloudSettings(vm) } }
             item { SettingPanel("Appearance") {
                     Choices("Theme", listOf("System","Dark","Light","AMOLED Pure Black"), settings.theme) { settings.theme = it }
                     Choices("Accent", listOf("Emerald","Ocean Blue","Violet","Amber","Rose"), settings.accent) { settings.accent = it }
@@ -399,20 +418,135 @@ private fun SliderRow(
     onChangeFinished: () -> Unit,
 ) {
     Column {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(label, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-            Text(display, style = MaterialTheme.typography.labelLarge)
-        }
-        val buzz = hapticAction()
-        Slider(
+        Text(label, style = MaterialTheme.typography.titleSmall)
+        LittleBitSlider(
             value = value,
-            colors = androidx.compose.material3.SliderDefaults.colors(activeTickColor = androidx.compose.ui.graphics.Color.Transparent,
-                inactiveTickColor = androidx.compose.ui.graphics.Color.Transparent),
-            onValueChange = { if (it != value) { buzz(); onChange(it) } },
+            onValueChange = onChange,
             valueRange = range,
             steps = steps,
+            display = display,
+            contentDescription = label,
             onValueChangeFinished = onChangeFinished,
         )
+    }
+}
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun CloudSettings(vm: ChatViewModel) {
+    val settings = vm.settings
+    var preset by remember { mutableStateOf(com.littlebit.chat.net.CloudPreset.byLabel(settings.cloudPreset)) }
+    var endpoint by remember { mutableStateOf(settings.cloudEndpoint) }
+    var model by remember { mutableStateOf(settings.cloudModel) }
+    var key by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf<String?>(null) }
+    var keyVersion by remember { mutableIntStateOf(0) }
+    val hasKey = remember(keyVersion) { vm.cloudHasKey() }
+    val valid = remember(endpoint) { com.littlebit.chat.net.CloudEndpointValidator.isAllowed(endpoint) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            for (option in com.littlebit.chat.net.CloudPreset.entries) {
+                androidx.compose.material3.FilterChip(
+                    selected = preset == option,
+                    onClick = {
+                        vm.applyCloudPreset(option)
+                        preset = option
+                        endpoint = settings.cloudEndpoint
+                        model = settings.cloudModel
+                        status = null
+                    },
+                    label = { Text(option.label) },
+                )
+            }
+        }
+        OutlinedTextField(
+            value = endpoint,
+            onValueChange = { endpoint = it; settings.cloudEndpoint = it },
+            label = { Text("Base URL") },
+            singleLine = true,
+            isError = !valid,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (!valid) {
+            Text(
+                "Public hosts need https://. http:// is allowed only for localhost and private LAN addresses.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        OutlinedTextField(
+            value = model,
+            onValueChange = { model = it; settings.cloudModel = it },
+            label = { Text("Model ID") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(enabled = !vm.cloudBusy && valid, onClick = vm::fetchCloudModels) {
+                Text(if (vm.cloudBusy) "Fetching…" else "Fetch models")
+            }
+            if (hasKey) Text(
+                "Key saved",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        if (vm.cloudModels.isNotEmpty()) {
+            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (id in vm.cloudModels) {
+                    androidx.compose.material3.FilterChip(
+                        selected = model == id,
+                        onClick = { model = id; settings.cloudModel = id },
+                        label = { Text(id) },
+                    )
+                }
+            }
+        }
+        OutlinedTextField(
+            value = key,
+            onValueChange = { key = it },
+            label = { Text(if (hasKey) "Replace API key" else "API key") },
+            singleLine = true,
+            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row {
+            TextButton(enabled = key.isNotBlank(), onClick = {
+                status = vm.saveCloudKey(key)
+                key = ""
+                keyVersion++
+            }) { Text("Save key") }
+            TextButton(enabled = hasKey, onClick = {
+                vm.clearCloudKey()
+                status = "Key removed"
+                keyVersion++
+            }) { Text("Remove key") }
+        }
+        SwitchRow(
+            title = "Use Cloud for new messages",
+            subtitle = "Streams to the provider instead of the local engine. Off by default.",
+            checked = vm.cloudMode,
+        ) { vm.updateCloudMode(it) }
+        Text(
+            "Cloud mode sends the visible chat turns to this endpoint. Keys are encrypted with AndroidKeyStore and never logged.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        status?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (it.contains("fail", true) || it.contains("error", true)) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+            )
+        }
     }
 }
 

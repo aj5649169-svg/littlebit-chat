@@ -12,7 +12,12 @@
 #include "jinja/parser.h"
 #include "json.h"
 #include <limits>
+#include <string>
 #include <cstring>
+
+// Qwen3 channel tokens, built from char codes so no text pipeline can mangle them.
+static const std::string kThinkOpen = std::string(1, char(60)) + "think" + char(62);
+static const std::string kThinkClose = std::string(1, char(60)) + "/think" + char(62);
 #include <cstdio>
 #include <cstdarg>
 #include <ggml-backend.h>
@@ -490,14 +495,14 @@ int runSamplingLoop(JNIEnv * env, NativeEngine * e, jobject cb,
         std::string piece = tokenToPiece(e->vocab, tok);
         if (e->arch == "gemma4") {
             const char * raw = llama_vocab_get_text(e->vocab, tok);
-            if (raw && !std::strcmp(raw, "<|channel>")) piece = "<think>";
-            if (raw && !std::strcmp(raw, "<channel|>")) piece = "</think>";
+            if (raw && !std::strcmp(raw, "<|channel>")) piece = kThinkOpen;
+            if (raw && !std::strcmp(raw, "<channel|>")) piece = kThinkClose;
         }
         if (budget >= 0 && e->close_thought >= 0) {
             const char *raw = llama_vocab_get_text(e->vocab, tok);
-            if (tok == e->close_thought) { e->thinking = false; piece = "</think>"; }
-            else if (raw && (!std::strcmp(raw, "<think>") || !std::strcmp(raw, "<|channel>"))) {
-                e->thinking = true; e->thought_tokens = 0; piece = "<think>";
+            if (tok == e->close_thought) { e->thinking = false; piece = kThinkClose; }
+            else if (raw && (!std::strcmp(raw, kThinkOpen.c_str()) || !std::strcmp(raw, "<|channel>"))) {
+                e->thinking = true; e->thought_tokens = 0; piece = kThinkOpen;
             } else if (e->thinking) ++e->thought_tokens;
         }
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -1111,6 +1116,68 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeReset(JNIEnv *, jobject, jlong han
     e->cached_tokens.clear();
     e->pending_utf8.clear();
     e->n_past = 0;
+}
+
+// --------------------------------------------------------------------------
+// Opt-in KV cache persistence (settings: Save KV Cache on Disk).
+// The state file is written beside the final path and renamed only after
+// llama_state_save_file() succeeded, so a killed process cannot leave a
+// half-written sidecar. loadKvCache bounds the token buffer to n_ctx and
+// resets the engine on any failure; nativeGenerate then re-prefills from the
+// longest common token prefix, so a stale state is only a cache miss.
+// --------------------------------------------------------------------------
+extern "C" JNIEXPORT jint JNICALL
+Java_com_littlebit_chat_engine_LlamaJni_nativeSaveKvCache(JNIEnv * env, jobject, jlong handle, jstring jpath) {
+    auto * e = reinterpret_cast<NativeEngine *>(handle);
+    if (e == nullptr || e->ctx == nullptr || e->cached_tokens.empty()) return -1;
+    const std::string path = toStdString(env, jpath);
+    if (path.empty()) return -1;
+    const std::string partial = path + ".partial";
+    try {
+        const bool ok = llama_state_save_file(e->ctx, partial.c_str(), e->cached_tokens.data(), e->cached_tokens.size());
+        if (!ok) {
+            std::remove(partial.c_str());
+            return -1;
+        }
+        if (std::rename(partial.c_str(), path.c_str()) != 0) {
+            std::remove(partial.c_str());
+            return -1;
+        }
+        return e->n_past > 0 ? static_cast<jint>(e->n_past) : static_cast<jint>(e->cached_tokens.size());
+    } catch (...) {
+        std::remove(partial.c_str());
+        return -1;
+    }
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_littlebit_chat_engine_LlamaJni_nativeLoadKvCache(JNIEnv * env, jobject, jlong handle, jstring jpath) {
+    auto * e = reinterpret_cast<NativeEngine *>(handle);
+    if (e == nullptr || e->ctx == nullptr) return -1;
+    const std::string path = toStdString(env, jpath);
+    if (path.empty()) return -1;
+    const size_t capacity = static_cast<size_t>(llama_n_ctx(e->ctx));
+    if (capacity == 0) return -1;
+    std::vector<llama_token> tokens(capacity);
+    size_t count = 0;
+    bool ok = false;
+    try {
+        ok = llama_state_load_file(e->ctx, path.c_str(), tokens.data(), tokens.size(), &count);
+    } catch (...) {
+        ok = false;
+    }
+    if (!ok || count == 0 || count > capacity) {
+        llama_memory_clear(llama_get_memory(e->ctx), false);
+        e->cached_tokens.clear();
+        e->pending_utf8.clear();
+        e->n_past = 0;
+        return -1;
+    }
+    tokens.resize(count);
+    e->cached_tokens = tokens;
+    e->n_past = static_cast<int>(count);
+    e->pending_utf8.clear();
+    return static_cast<jint>(count);
 }
 
 extern "C" JNIEXPORT jint JNICALL

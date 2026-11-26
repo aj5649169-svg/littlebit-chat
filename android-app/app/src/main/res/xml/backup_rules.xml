@@ -1,4 +1,6 @@
 <full-backup-content>
     <exclude domain="file" path="chats/" />
+    <exclude domain="file" path="image_models/" />
+    <exclude domain="file" path="api_keys/" />
     <exclude domain="sharedpref" path="." />
 </full-backup-content>

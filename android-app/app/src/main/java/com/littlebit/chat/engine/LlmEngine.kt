@@ -58,4 +58,10 @@ interface LlmEngine {
     fun reset()
     fun stop()
     fun unload()
+
+    /** Writes the live KV state + token list. Returns the token count, or -1. */
+    fun saveKvCache(path: String): Int
+
+    /** Restores a state file into the context. Returns the token count, or -1. */
+    fun loadKvCache(path: String): Int
 }

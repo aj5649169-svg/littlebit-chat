@@ -97,6 +97,12 @@ class LlamaEngine(diagnosticPath: String? = null) : LlmEngine {
         }
     }
 
+    override fun saveKvCache(path: String): Int =
+        if (handle == 0L) -1 else LlamaJni.nativeSaveKvCache(handle, path)
+
+    override fun loadKvCache(path: String): Int =
+        if (handle == 0L) -1 else LlamaJni.nativeLoadKvCache(handle, path)
+
     @Synchronized override fun unload() {
         val h = handle
         if (h != 0L) {

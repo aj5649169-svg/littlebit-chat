@@ -14,7 +14,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 data class ChatMessage(val role: String, val content: String, val fast: Boolean = false, val cutOff: Boolean = false,
-                       val timing: ReplyTiming? = null, val backend: String = "", val sources: List<String> = emptyList())
+                       val timing: ReplyTiming? = null, val backend: String = "", val sources: List<String> = emptyList(),
+                       val searchQuery: String = "")
 class ChatSession(val id: String, title: String, updatedAt: Long, val messages: MutableList<ChatMessage>, pinned: Boolean = false) {
     var title by mutableStateOf(title)
     var updatedAt by mutableStateOf(updatedAt)
@@ -44,7 +45,8 @@ class ChatStore(private val file: File) {
                     messages.add(ChatMessage(m.getString("role"), m.getString("content"), m.optBoolean("fast"), m.optBoolean("cutOff"),
                         m.optJSONObject("timing")?.let { t -> ReplyTiming(t.getInt("promptTokens"), t.getDouble("promptMs"),
                             t.getInt("tokens"), t.getDouble("genMs"), t.getDouble("firstMs"), t.getInt("used"), t.getInt("capacity")) },
-                        m.optString("backend"), m.optJSONArray("sources")?.let { links -> List(links.length()) { links.getString(it) } }.orEmpty()))
+                        m.optString("backend"), m.optJSONArray("sources")?.let { links -> List(links.length()) { links.getString(it) } }.orEmpty(),
+                        m.optString("searchQuery")))
                 }
                 sessions.add(ChatSession(
                     id = o.getString("id"),
@@ -78,6 +80,7 @@ class ChatStore(private val file: File) {
                 for (m in s.messages) {
                     val mo = JSONObject()
                     if (m.sources.isNotEmpty()) mo.put("sources", JSONArray(m.sources))
+                    if (m.searchQuery.isNotEmpty()) mo.put("searchQuery", m.searchQuery)
                     mo.put("fast", m.fast)
                     mo.put("cutOff", m.cutOff)
                     mo.put("role", m.role)

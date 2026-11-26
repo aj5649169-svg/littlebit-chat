@@ -23,8 +23,8 @@ data class ModelEntry(
 /** Catalog parsed from assets/models.json (edit the JSON to change the hub). */
 object ModelsCatalog {
 
-    /** Display order for the Model Hub tiers. */
-    val TIER_ORDER = listOf("8B spotlight", "Compact", "Large 2-bit", "Image", "Research")
+    /** Display order for the Model Hub tiers. 0.55-bit leads, next to the 8B spotlight. */
+    val TIER_ORDER = listOf("0.55-Bit (LittleBit)", "8B spotlight", "Compact", "Large 2-bit", "Image")
 
     fun load(context: Context): List<ModelEntry> {
         val text = context.assets.open("models.json").bufferedReader().use { it.readText() }

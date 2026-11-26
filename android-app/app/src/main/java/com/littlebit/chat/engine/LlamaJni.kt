@@ -79,6 +79,8 @@ internal object LlamaJni {
     external fun nativeReset(handle: Long)
     external fun nativePromptSize(handle: Long, prompt: String): Int
     external fun nativeStop(handle: Long)
+    external fun nativeSaveKvCache(handle: Long, path: String): Int
+    external fun nativeLoadKvCache(handle: Long, path: String): Int
     external fun nativeSetThreads(handle: Long, threads: Int)
     external fun nativeUnload(handle: Long)
 }

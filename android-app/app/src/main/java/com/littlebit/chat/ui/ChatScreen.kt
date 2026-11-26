@@ -40,7 +40,13 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.FormatListBulleted
+import androidx.compose.material.icons.filled.Lightbulb
+import androidx.compose.material.icons.filled.Notes
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
@@ -70,6 +76,8 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -110,6 +118,11 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     var autoScrollEnabled by remember(vm.currentSession?.id) { mutableStateOf(true) }
     var touchingList by remember { mutableStateOf(false) }
+    // Reading layoutInfo through a derived state keeps scrolling out of
+    // composition: the FAB only recomposes when "at the bottom" flips.
+    val atBottom by remember(listState, vm.currentSession?.id) {
+        derivedStateOf { !listState.canScrollForward }
+    }
     val manualScroll = remember(listState, vm.currentSession?.id) {
         object : NestedScrollConnection {
             override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
@@ -144,7 +157,7 @@ fun ChatScreen(
     actionIndex?.let { MessageActions(vm, it) { actionIndex = null } }
     Scaffold(
         floatingActionButton = {
-            AnimatedVisibility(vm.streamActive && !autoScrollEnabled) {
+            AnimatedVisibility(!atBottom) {
                 androidx.compose.material3.SmallFloatingActionButton(shape = CircleShape, onClick = {
                     autoScrollEnabled = true
                     scrollScope.launch { listState.animateScrollToItem(totalItemCount - 1) }
@@ -227,15 +240,18 @@ fun ChatScreen(
                 val message = vm.currentMessages[index]
                 MessageRow(
                     message = message,
+                    messageKey = "${vm.currentSession?.id}:$index",
                     actions = { buzz(); if (vm.streamActive) autoScrollEnabled = false; actionIndex = index },
                     isLast = index == vm.currentMessages.size - 1,
                     showStats = index == vm.currentMessages.size - 1 && !vm.streamActive,
                     vm = vm,
                 )
-                if (message.sources.isNotEmpty()) {
+                if (message.sources.isNotEmpty() || message.searchQuery.isNotBlank()) {
                     var expanded by remember(message) { mutableStateOf(false) }
-                    TextButton(onClick = { expanded = !expanded }) { Text("Sources · ${message.sources.size}") }
-                    if (expanded) for (url in message.sources) MarkdownText(url)
+                    TextButton(onClick = { expanded = true }) {
+                        Text(if (message.sources.isEmpty()) "Searched · ${message.searchQuery}" else "Sources · ${message.sources.size}")
+                    }
+                    if (expanded) SourcesSheet(message) { expanded = false }
                 }
             }
             if (vm.searchQuery.isNotEmpty()) item { Text("Searching web… ${vm.searchQuery}", modifier = Modifier.padding(12.dp)) }
@@ -264,6 +280,7 @@ fun ChatScreen(
 @Composable
 private fun MessageRow(
     message: ChatMessage,
+    messageKey: String,
     actions: () -> Unit,
     isLast: Boolean,
     showStats: Boolean,
@@ -309,6 +326,16 @@ private fun MessageRow(
                             Icon(Icons.Default.Refresh, "Regenerate reply", Modifier.size(20.dp))
                         }
                         IconButton(onClick = actions) { Icon(Icons.Default.MoreVert, "More message actions") }
+                        val speaking by vm.tts.speakingId.collectAsState()
+                        if (speaking == messageKey) {
+                            IconButton(onClick = vm::stopSpeaking) {
+                                Icon(Icons.Default.Stop, "Stop reading aloud", Modifier.size(18.dp))
+                            }
+                        } else {
+                            IconButton(onClick = { buzz(); vm.speak(messageKey, message.content) }) {
+                                Icon(Icons.Default.VolumeUp, "Read reply aloud", Modifier.size(18.dp))
+                            }
+                        }
                         Spacer(Modifier.weight(1f))
 
                     }
@@ -378,6 +405,38 @@ private fun ThinkAccordion(think: String) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 }
+            }
+        }
+    }
+}
+
+/** Expandable source list. The searched query stays at the very top. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SourcesSheet(message: ChatMessage, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("Sources", style = MaterialTheme.typography.titleMedium)
+            if (message.searchQuery.isNotBlank()) {
+                Text(
+                    "Searched: \"${message.searchQuery}\"",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            for (url in message.sources) MarkdownText(url)
+            if (message.sources.isEmpty()) {
+                Text(
+                    "No source links were attached for this turn.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -453,6 +512,7 @@ private fun EmptyState(
 @Composable
 private fun InputBar(vm: ChatViewModel) {
     var showSheet by remember { mutableStateOf(false) }
+    val ttsMessage by vm.tts.message.collectAsState()
     val buzz = hapticAction()
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.attach(uri)
@@ -492,6 +552,29 @@ private fun InputBar(vm: ChatViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+        if (ttsMessage != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        ttsMessage.orEmpty(),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = vm::dismissTtsMessage) { Text("Dismiss") }
+                }
+            }
+        }
+        if (vm.isLoaded && vm.capacity > 0 && !vm.cloudMode) {
+            ContextUsageBar(vm.used, vm.capacity)
         }
         Surface(
             shape = RoundedCornerShape(22.dp),
@@ -535,7 +618,22 @@ private fun InputBar(vm: ChatViewModel) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    if (com.littlebit.chat.BuildConfig.WEB_SEARCH) {
+                    if (vm.cloudSupported) {
+                        Spacer(Modifier.width(6.dp))
+                        Surface(
+                            onClick = { buzz(); vm.updateCloudMode(!vm.cloudMode) },
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (vm.cloudMode) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                        ) {
+                            Text(
+                                if (vm.cloudMode) "Cloud" else "Local",
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 5.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (vm.cloudMode) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (com.littlebit.chat.BuildConfig.WEB_SEARCH && !vm.cloudMode) {
                         androidx.compose.material3.IconToggleButton(checked = vm.searchOnce, enabled = !vm.busy,
                             onCheckedChange = { vm.searchOnce = it; vm.invalidateDraft() }) {
                             Icon(Icons.Default.Language, contentDescription = "Search the web for this message")
@@ -543,8 +641,11 @@ private fun InputBar(vm: ChatViewModel) {
                     }
                     Spacer(Modifier.weight(1f))
                     Spacer(Modifier.width(6.dp))
-                    val canSend = !vm.busy && (((vm.isLoaded || vm.lastModelName != null) && (vm.input.isNotBlank() || vm.attachment != null)) ||
-                        (vm.attachment == null && vm.settings.calculator && vm.input.trimStart().startsWith("/calc ")))
+                    val canSend = !vm.busy && (
+                        (vm.cloudSupported && vm.cloudMode && vm.input.isNotBlank()) ||
+                            ((vm.isLoaded || vm.lastModelName != null) && (vm.input.isNotBlank() || vm.attachment != null)) ||
+                            (vm.attachment == null && vm.settings.calculator && vm.input.trimStart().startsWith("/calc "))
+                        )
                     Surface(
                         enabled = vm.isGenerating || canSend,
                         onClick = {
@@ -579,19 +680,42 @@ private fun InputBar(vm: ChatViewModel) {
             onDismissRequest = { showSheet = false },
             sheetState = sheetState,
         ) {
-            Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-                Text("Attachments & Plugins", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(4.dp))
-                TextButton(onClick = { showSheet = false; picker.launch(arrayOf("*/*")) }) {
-                    Text("Attach text or code file")
-                }
-                for ((label, prompt) in listOf("Summarize" to "Summarize the following:",
-                        "Explain Simply" to "Explain this in simple language:",
-                        "Debug Code" to "Find and explain the bug in this code:",
-                        "Bullet Points" to "Turn this into bullet points:")) {
-                    TextButton(onClick = { vm.onInputChange("$prompt\n" + vm.input); showSheet = false }) { Text(label) }
-                }
-                Spacer(Modifier.height(24.dp))
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "Attachments & Plugins",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+                )
+                SheetActionRow(
+                    icon = Icons.Default.Description,
+                    title = "Attach text or code file",
+                    subtitle = "TXT, MD, JSON, CSV, Kotlin, Python, C++, log",
+                    enabled = !vm.busy,
+                ) { showSheet = false; picker.launch(arrayOf("*/*")) }
+                SheetActionRow(
+                    icon = Icons.Default.Notes,
+                    title = "Summarize",
+                    subtitle = "Condense the current draft",
+                ) { vm.onInputChange("Summarize the following:\n" + vm.input); showSheet = false }
+                SheetActionRow(
+                    icon = Icons.Default.Lightbulb,
+                    title = "Explain Simply",
+                    subtitle = "Plain-language explanation",
+                ) { vm.onInputChange("Explain this in simple language:\n" + vm.input); showSheet = false }
+                SheetActionRow(
+                    icon = Icons.Default.BugReport,
+                    title = "Debug Code",
+                    subtitle = "Find and explain the bug",
+                ) { vm.onInputChange("Find and explain the bug in this code:\n" + vm.input); showSheet = false }
+                SheetActionRow(
+                    icon = Icons.Default.FormatListBulleted,
+                    title = "Bullet Points",
+                    subtitle = "Turn it into a clean list",
+                ) { vm.onInputChange("Turn this into bullet points:\n" + vm.input); showSheet = false }
+                Spacer(Modifier.height(20.dp))
             }
         }
     }

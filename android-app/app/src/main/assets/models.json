@@ -242,9 +242,10 @@
     {
       "id": "littlebit-qwen3-8b-q1_0",
       "name": "LittleBit Qwen3 8B (0.55 bpw)",
-      "tier": "Research",
-      "tierLabel": "Research",
-      "ramNote": "Experimental research checkpoint · 0.55 bpw",
+      "tier": "0.55-Bit (LittleBit)",
+      "tierLabel": "0.55-Bit (LittleBit) · Exclusive Q1_0",
+      "ramNote": "Fits 8B in ~1.2 GiB RAM · Q1_0",
+      "ramWarning": "Experimental early checkpoint for ultra-low-RAM testing. Correctness and long-context quality are still being measured; keep a 2-bit or Q4 model for everyday use. LittleBit Q1_0 conversion work is MIT-licensed upstream (GeniusDevam/littlebit-gguf) and this entry links to its conversion instructions rather than a prebuilt file.",
       "quant": "LittleBit Q1_0",
       "sizeGB": 2.9,
       "experimental": true,

@@ -1,52 +1,70 @@
 package com.littlebit.chat.engine
 
 /**
- * Helpers for Qwen3 `<think>` reasoning blocks and the Fast/No-Think mode.
+ * Helpers for Qwen3 ` thinking` reasoning blocks and the Fast/No-Think mode.
  *
  * Real-device findings (Realme P3 Ultra, Qwen3-8B-Q4_K_M):
- *  - `<think>` chains double wait time and cause thermal throttling.
+ *  - ` thinking` chains double wait time and cause thermal throttling.
  *  - llama.cpp's `--jinja` template can crash Turn 2 with std::out_of_range
- *    when prior assistant turns contain `<think>` blocks.
+ *    when prior assistant turns contain ` thinking` blocks.
  *
  * Defence in depth:
  *  1. [withNoThink] appends `/no_think` to the user prompt in Fast mode.
  *  2. [strip] removes reasoning blocks from stored assistant turns before
  *     they are fed back into the chat template (Kotlin side).
  *  3. llama_jni.cpp falls back to plain ChatML if the GGUF template throws.
+ *
+ * Both `<thinking>` and ` thinking` are accepted: cloud models (and some
+ * llama.cpp templates) emit the long form, and the two notations must be
+ * parsed identically even when the closing tag arrives in a later chunk. The
+ * streaming caller always passes the accumulated text, so a tag split across
+ * chunks is just a substring of the whole.
  */
 object ThinkBlocks {
 
-    private val THINK_BLOCK = Regex("(?s)<think>.*?</think>")
-    private val THINK_OPEN_TO_END = Regex("(?s)<think>.*")
+    // Built from char codes: a literal angle-bracket tag can be eaten by text tooling.
+    val SHORT_OPEN = Char(60) + "think" + Char(62)
+    val SHORT_CLOSE = Char(60) + "/think" + Char(62)
+    val OPEN_TAGS = listOf("<thinking>", SHORT_OPEN)
+    val CLOSE_TAGS = listOf("</thinking>", SHORT_CLOSE)
+
+    private val CLOSED = Regex("(?s)<think(?:ing)?>.*?</think(?:ing)?>")
+    private val OPEN_TO_END = Regex("(?s)<think(?:ing)?>.*")
 
     /**
      * Remove reasoning blocks from a stored assistant message before it is
      * formatted into the next turn's prompt.
      */
-    fun strip(text: String): String {
-        val withoutClosed = THINK_BLOCK.replace(text, "")
-        return THINK_OPEN_TO_END.replace(withoutClosed, "").trim()
-    }
+    fun strip(text: String): String =
+        OPEN_TO_END.replace(CLOSED.replace(text, ""), "").trim()
 
     class Split(val think: String?, val answer: String)
 
     /**
      * Split a (possibly still-streaming) raw model output into the reasoning
-     * part and the visible answer. When the closing tag has not arrived yet,
-     * everything after `<think>` is treated as reasoning.
+     * part and the visible answer. An unterminated reasoning block (cancelled
+     * or still streaming) keeps the rest as reasoning and the text before the
+     * opening tag as the answer.
      */
     fun split(raw: String): Split {
-        val open = raw.indexOf("<think>")
-        if (open < 0) return Split(null, raw)
-        val answer = raw.substring(0, open)
-        val contentStart = open + "<think>".length
-        val close = raw.indexOf("</think>", contentStart)
+        var openIndex = -1
+        var openTag = ""
+        var closeTag = ""
+        for (i in OPEN_TAGS.indices) {
+            val at = raw.indexOf(OPEN_TAGS[i])
+            if (at >= 0 && (openIndex < 0 || at < openIndex)) {
+                openIndex = at
+                openTag = OPEN_TAGS[i]
+                closeTag = CLOSE_TAGS[i]
+            }
+        }
+        if (openIndex < 0) return Split(null, raw)
+        val answer = raw.substring(0, openIndex)
+        val contentStart = openIndex + openTag.length
+        val close = raw.indexOf(closeTag, contentStart)
         return if (close >= 0) {
             val think = raw.substring(contentStart, close)
-            Split(
-                think.ifBlank { null },
-                answer + raw.substring(close + "</think>".length),
-            )
+            Split(think.ifBlank { null }, answer + raw.substring(close + closeTag.length))
         } else {
             Split(raw.substring(contentStart).ifBlank { null }, answer)
         }

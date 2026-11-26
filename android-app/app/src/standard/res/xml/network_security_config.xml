@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Standard edition only. Public hosts must still use https:// because
+  CloudEndpointValidator rejects cleartext for every non-private host before a
+  connection is opened. Cleartext stays enabled at the platform layer so a
+  local Ollama/LM Studio server on 127.0.0.1 or a private LAN address works.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">::1</domain>
+    </domain-config>
+</network-security-config>

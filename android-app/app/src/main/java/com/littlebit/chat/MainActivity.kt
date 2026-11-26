@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -124,7 +125,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class AppScreen { CHAT, MODEL_HUB, PLUGINS, SETTINGS, IMAGE_STUDIO }
+private enum class AppScreen { CHAT, MODEL_HUB, PLUGINS, SETTINGS, IMAGE_STUDIO, ASSISTANTS }
 
 @Composable
 private fun RootScaffold(vm: ChatViewModel = viewModel()) {
@@ -171,6 +172,7 @@ private fun RootScaffold(vm: ChatViewModel = viewModel()) {
             ModalDrawerSheet {
                 DrawerContent(
                     vm = vm,
+                    selected = screen,
                     onNewChat = {
                         vm.createChat()
                         screen = AppScreen.CHAT
@@ -188,6 +190,7 @@ private fun RootScaffold(vm: ChatViewModel = viewModel()) {
                         closeDrawer()
                     },
                     onStudio = { hideIme(); screen = AppScreen.IMAGE_STUDIO; closeDrawer() },
+                    onOpenAssistants = { hideIme(); screen = AppScreen.ASSISTANTS; closeDrawer() },
                     onOpenPlugins = {
                         hideIme()
                         screen = AppScreen.PLUGINS
@@ -209,7 +212,12 @@ private fun RootScaffold(vm: ChatViewModel = viewModel()) {
                 onOpenModelHub = { hideIme(); screen = AppScreen.MODEL_HUB },
                 onOpenSettings = { hideIme(); screen = AppScreen.SETTINGS },
             )
-            AppScreen.MODEL_HUB -> ModelHubScreen(vm = vm, onBack = { hideIme(); screen = AppScreen.CHAT })
+            AppScreen.MODEL_HUB -> ModelHubScreen(
+                vm = vm,
+                onBack = { hideIme(); screen = AppScreen.CHAT },
+                onOpenStudio = { hideIme(); screen = AppScreen.IMAGE_STUDIO },
+            )
+            AppScreen.ASSISTANTS -> com.littlebit.chat.ui.AssistantsScreen(vm, onBack = { hideIme(); screen = AppScreen.CHAT })
             AppScreen.PLUGINS -> PluginsScreen(vm, onBack = { hideIme(); screen = AppScreen.CHAT })
             AppScreen.IMAGE_STUDIO -> com.littlebit.chat.studio.ImageStudio(vm) { screen = AppScreen.CHAT }
             AppScreen.SETTINGS -> SettingsScreen(vm = vm, onBack = { hideIme(); screen = AppScreen.CHAT })
@@ -220,11 +228,13 @@ private fun RootScaffold(vm: ChatViewModel = viewModel()) {
 @Composable
 private fun DrawerContent(
     vm: ChatViewModel,
+    selected: AppScreen,
     onNewChat: () -> Unit,
     onOpenChat: (String) -> Unit,
 
     onOpenModelHub: () -> Unit,
     onStudio: () -> Unit,
+    onOpenAssistants: () -> Unit,
     onOpenPlugins: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -306,29 +316,42 @@ private fun DrawerContent(
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
+        // Every tool row uses the same leading-icon column and the same
+        // NavigationDrawerItem padding, so the icons line up exactly.
         NavigationDrawerItem(
             label = { Text("Model Hub") },
-            selected = false,
+            selected = selected == AppScreen.MODEL_HUB,
             onClick = onOpenModelHub,
             icon = { Icon(Icons.Default.FolderOpen, contentDescription = null) },
+            modifier = Modifier.padding(androidx.compose.material3.NavigationDrawerItemDefaults.ItemPadding),
         )
         NavigationDrawerItem(
             label = { Text("Image Studio") },
-            selected = false,
+            selected = selected == AppScreen.IMAGE_STUDIO,
             onClick = onStudio,
             icon = { Icon(Icons.Default.Image, contentDescription = null) },
+            modifier = Modifier.padding(androidx.compose.material3.NavigationDrawerItemDefaults.ItemPadding),
+        )
+        NavigationDrawerItem(
+            label = { Text("Assistants & Notes") },
+            selected = selected == AppScreen.ASSISTANTS,
+            onClick = onOpenAssistants,
+            icon = { Icon(Icons.Default.Person, contentDescription = null) },
+            modifier = Modifier.padding(androidx.compose.material3.NavigationDrawerItemDefaults.ItemPadding),
         )
         NavigationDrawerItem(
             label = { Text("Plugins & Tools") },
-            selected = false,
+            selected = selected == AppScreen.PLUGINS,
             onClick = onOpenPlugins,
             icon = { Icon(Icons.Default.Edit, contentDescription = null) },
+            modifier = Modifier.padding(androidx.compose.material3.NavigationDrawerItemDefaults.ItemPadding),
         )
         NavigationDrawerItem(
             label = { Text("Settings") },
-            selected = false,
+            selected = selected == AppScreen.SETTINGS,
             onClick = onOpenSettings,
             icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+            modifier = Modifier.padding(androidx.compose.material3.NavigationDrawerItemDefaults.ItemPadding),
         )
         Spacer(Modifier.height(8.dp))
     }

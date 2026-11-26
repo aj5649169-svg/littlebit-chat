@@ -66,7 +66,7 @@ private val ExperimentalColor = Color(0xFF7C8CF8)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
+fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit, onOpenStudio: () -> Unit) {
     val context = LocalContext.current
     var models by remember { mutableStateOf<List<ModelEntry>?>(null) }
     var confirmHeavy by remember { mutableStateOf<ModelEntry?>(null) }
@@ -141,6 +141,41 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            vm.diffusionModel?.let { name ->
+                item(key = "diffusion-guard") {
+                    Card(
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                    ) {
+                        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                            Text(
+                                "This looks like an Image Studio model, not a text chat LLM.",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                            Text(
+                                name,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                TextButton(onClick = vm::dismissDiffusionModel) { Text("Dismiss") }
+                                Button(onClick = {
+                                    vm.dismissDiffusionModel()
+                                    onOpenStudio()
+                                }) { Text("Open Image Studio") }
+                            }
+                        }
+                    }
+                }
             }
             item(key = "my-local-header") {
                 Column {
@@ -304,6 +339,7 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
                             )
                             Text(
                                 when (tier) {
+                                    "0.55-Bit (LittleBit)" -> "Exclusive Q1_0 path. Fits 8B in ~1.2 GiB RAM — an experimental early checkpoint for ultra-low-RAM testing, not an everyday model yet."
                                     "8B spotlight" -> "2-bit models reduce storage and memory use. Start at 2K context on 6–8 GB phones."
                                     "Image" -> "Image Studio models. SD 1.5 Inpainting and SD-Turbo run through stable-diffusion.cpp; Qwen Image 2.1 Turbo is experimental 2-bit."
                                     else -> group.first().tierLabel + " models"
@@ -435,6 +471,13 @@ private fun ModelCard(entry: ModelEntry, fit: String, onDownload: () -> Unit) {
                     }
                 }
                 TextButton(onClick = onDownload) { Text("Download") }
+            }
+            if (entry.tier == "0.55-Bit (LittleBit)") {
+                BadgeChip(
+                    text = "Exclusive · Q1_0",
+                    color = ExperimentalColor,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
             }
             if (entry.recommended) {
                 BadgeChip(
