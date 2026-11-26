@@ -826,8 +826,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     val prompt = matched?.formatted ?: formatPrompt(grounded, prior, grounded = sources.isNotEmpty())
                     commitUser(text, fastMode)
                     syncActiveToStore()
-                    val warm = matched == null && query.isBlank() && tryWarmKvCache(prior)
-                    generateReply(prompt, matched, sources = sources.map { it.first }, warm = warm, searched = query)
+                    // A restored KV prefix still needs the new turn's tokens, so the
+                    // normal generate() path is used: nativeGenerate re-prefills only
+                    // the suffix after the longest common token prefix.
+                    if (matched == null && query.isBlank()) tryWarmKvCache(prior)
+                    generateReply(prompt, matched, sources = sources.map { it.first }, warm = false, searched = query)
                 }
             } catch (e: Exception) {
                 if (!appended && input.isBlank()) { input = text }
@@ -1376,7 +1379,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             KvCacheStore.discard(dir, session.id)
             return false
         }
-        promptDecoded = true
+        // The restored state ends at the previous assistant reply; the new user
+        // turn is prefilled by the normal generate() call.
         promptProgress = ""
         return true
     }
@@ -1491,7 +1495,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (thinking.isNotEmpty()) append(ThinkBlocks.SHORT_OPEN).append(thinking).append(ThinkBlocks.SHORT_CLOSE)
                     append(answer)
                 }
-            }
             }
             try {
                 if (replaceFrom != null) while (currentMessages.size > replaceFrom) currentMessages.removeAt(currentMessages.lastIndex)

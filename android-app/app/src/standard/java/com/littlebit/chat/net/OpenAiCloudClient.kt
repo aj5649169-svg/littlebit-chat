@@ -1,8 +1,11 @@
 package com.littlebit.chat.net
 
 import android.content.Context
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -36,8 +39,15 @@ class OpenAiCloudClient(context: Context) : CloudClient {
         require(request.model.isNotBlank()) { "Enter a model ID for this provider." }
         val apiKey = keys.read()
         val connection = URI(url).toURL().openConnection() as HttpURLConnection
-        val cancellation = coroutineContext[Job]?.invokeOnCompletion(onCancelling = true, invokeImmediately = true) {
-            runCatching { connection.disconnect() }
+        // A separate watcher disconnects the blocking read as soon as the caller
+        // is cancelled (Stop), without relying on internal coroutine APIs.
+        val parent = coroutineContext[Job]
+        val watchdog = CoroutineScope(Dispatchers.IO).launch {
+            try {
+                parent?.join()
+            } finally {
+                runCatching { connection.disconnect() }
+            }
         }
         try {
             connection.requestMethod = "POST"
@@ -90,7 +100,7 @@ class OpenAiCloudClient(context: Context) : CloudClient {
                 runCatching { reader.close() }
             }
         } finally {
-            cancellation?.dispose()
+            watchdog.cancel()
             runCatching { connection.disconnect() }
         }
     }
@@ -160,7 +170,7 @@ class OpenAiCloudClient(context: Context) : CloudClient {
     private companion object {
         const val CONNECT_TIMEOUT_MS = 15_000
         const val READ_TIMEOUT_MS = 180_000
-        const val REFERER = "https://github.com/5649169-svg/littlebit-chat"
+        const val REFERER = "https://github.com/aj5649169-svg/littlebit-chat"
         const val INVALID_ENDPOINT =
             "Enter a valid endpoint. Public hosts must use https://; http:// is allowed only for localhost and private LAN addresses."
     }

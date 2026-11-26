@@ -111,7 +111,10 @@ jobs:
         run: |
           set -o pipefail
           gradle wrapper --gradle-version "${GRADLE_VERSION}" --distribution-type bin --gradle-distribution-sha256-sum "$GRADLE_SHA256"
-          ./gradlew --no-daemon --stacktrace :app:assembleRelease 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+          ./gradlew --no-daemon --stacktrace \
+            :app:testOfflineReleaseUnitTest \
+            :app:testStandardReleaseUnitTest \
+            :app:assembleRelease 2>&1 | tee "$RUNNER_TEMP/gradle.log"
 
       - name: Summarize Gradle failure
         if: failure()
@@ -148,6 +151,14 @@ jobs:
             "$build_tools/aapt2" dump badging "$apk" > "$badging"
             grep -E "^(package|native-code):" "$badging"
             grep -q "native-code: 'arm64-v8a'" "$badging"
+            if [[ "$edition" == "offline" ]]; then
+              if grep -qE "uses-permission: name='android.permission.(INTERNET|ACCESS_NETWORK_STATE)'" "$badging"; then
+                echo "::error::offline APK must not request INTERNET or ACCESS_NETWORK_STATE"
+                exit 1
+              fi
+            else
+              grep -q "uses-permission: name='android.permission.INTERNET'" "$badging"
+            fi
             unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libsd_jni.so'
             unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libllama_jni.so'
             rm -rf "$RUNNER_TEMP/apks/$edition-libs"
