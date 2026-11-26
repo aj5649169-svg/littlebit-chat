@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -78,7 +79,7 @@ class MainActivity : ComponentActivity() {
             runCatching {
                 val trace = StringWriter().also { throwable.printStackTrace(PrintWriter(it)) }.toString()
                 File(appContext.filesDir, "last_crash.txt").writeText(
-                    "Thread: ${thread.name}\\nTime: ${System.currentTimeMillis()}\\n\\n$trace"
+                    com.littlebit.chat.data.CrashLog.format(thread.name, System.currentTimeMillis(), trace)
                 )
             }
             if (previous != null) previous.uncaughtException(thread, throwable)
@@ -311,7 +312,12 @@ private fun DrawerContent(
             onClick = onOpenModelHub,
             icon = { Icon(Icons.Default.FolderOpen, contentDescription = null) },
         )
-        NavigationDrawerItem(label = { Text("Image Studio") }, selected = false, onClick = onStudio)
+        NavigationDrawerItem(
+            label = { Text("Image Studio") },
+            selected = false,
+            onClick = onStudio,
+            icon = { Icon(Icons.Default.Image, contentDescription = null) },
+        )
         NavigationDrawerItem(
             label = { Text("Plugins & Tools") },
             selected = false,

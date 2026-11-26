@@ -51,7 +51,7 @@ fun HeaderSummary(vm: ChatViewModel, source: String) {
     val header by produceState<GgufHeader?>(null, source) {
         value = withContext(Dispatchers.IO) { runCatching {
             if (source.startsWith("content://")) context.contentResolver.openFileDescriptor(Uri.parse(source), "r")?.use {
-                vm.inspectFile(File("/proc/self/fd/${it.fd}"))
+                vm.inspectFile(File(com.littlebit.chat.engine.ModelPath.fromDescriptor(it.fd)))
             } else vm.inspectFile(File(source))
         }.getOrNull() }
     }

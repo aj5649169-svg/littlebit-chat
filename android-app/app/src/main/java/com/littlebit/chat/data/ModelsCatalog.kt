@@ -24,7 +24,7 @@ data class ModelEntry(
 object ModelsCatalog {
 
     /** Display order for the Model Hub tiers. */
-    val TIER_ORDER = listOf("8B spotlight", "Compact", "Large 2-bit", "Research", "Image models")
+    val TIER_ORDER = listOf("8B spotlight", "Compact", "Large 2-bit", "Image", "Research")
 
     fun load(context: Context): List<ModelEntry> {
         val text = context.assets.open("models.json").bufferedReader().use { it.readText() }

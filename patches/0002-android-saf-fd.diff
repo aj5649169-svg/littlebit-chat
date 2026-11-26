@@ -1,0 +1,110 @@
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 808fb44..65a156f 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -775,8 +775,17 @@ llama_model_loader::llama_model_loader(
+         // mmap places tensors at their file offsets, so an embedded GGUF must be aligned in the file too
+         const size_t tensor_align = ggml_backend_buft_get_alignment(ggml_backend_cpu_buffer_type());
+         if (use_mmap && gguf_get_data_offset(metadata) % tensor_align != 0) {
++#if defined(__ANDROID__)
++            // A Storage Access Framework descriptor (often FUSE-backed) can fail
++            // to map even when the file is otherwise readable. Buffered reads
++            // still work, so downgrade instead of failing the whole load.
++            LLAMA_LOG_WARN("%s: GGUF data section at file offset %zu is not %zu byte aligned, falling back to buffered reads\n",
++                __func__, gguf_get_data_offset(metadata), tensor_align);
++            use_mmap = false;
++#else
+             throw std::runtime_error(format("%s: GGUF data section at file offset %zu is not %zu byte aligned, cannot mmap",
+                 __func__, gguf_get_data_offset(metadata), tensor_align));
++#endif
+         }
+ 
+         get_key(llm_kv(LLM_KV_GENERAL_ARCHITECTURE), arch_name, false);
+@@ -1523,8 +1532,26 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
+ 
+             const size_t prefetch_size = prefetch && use_mmap ? -1 : 0;
+ 
+-            std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa,
+-                    lazy.for_file(idx));
++            std::unique_ptr<llama_mmap> mapping;
++            try {
++                mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa, lazy.for_file(idx));
++            } catch (const std::exception & err) {
++#if defined(__ANDROID__)
++                if (lazy.any()) {
++                    throw;
++                }
++                // FUSE-backed SAF descriptors can reject mmap while ordinary reads
++                // still work (common for document providers on Android 11-16).
++                LLAMA_LOG_WARN("%s: mmap failed for GGUF #%u (%s); falling back to buffered reads\n",
++                        __func__, idx, err.what());
++                use_mmap = false;
++                mappings.clear();
++                mmaps_used.clear();
++                break;
++#else
++                throw;
++#endif
++            }
+             mmaps_used.emplace_back(mapping->size(), 0);
+             if (mlock_mmaps) {
+                 std::unique_ptr<llama_mlock> mlock_mmap(new llama_mlock());
+diff --git a/src/llama.cpp b/src/llama.cpp
+index cee6a7d..10cab5a 100644
+--- a/src/llama.cpp
++++ b/src/llama.cpp
+@@ -22,11 +22,16 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <ctime>
+ #include <stdexcept>
+ #include <vector>
+ 
++#if defined(__ANDROID__)
++#include <unistd.h>
++#endif
++
+ #if defined(_MSC_VER)
+ #pragma warning(disable: 4244 4267) // possible loss of data
+ #endif
+@@ -459,6 +464,37 @@ struct llama_model * llama_model_init_from_user(
+ struct llama_model * llama_model_load_from_file(
+         const char * path_model,
+         struct llama_model_params params) {
++#if defined(__ANDROID__)
++    // Android's Storage Access Framework hands the app a file descriptor that
++    // is exposed as /proc/self/fd/<N>. Re-opening that path with fopen() can
++    // lose the document provider's file description (FUSE, Android 11+), so
++    // duplicate the descriptor we already own instead and keep the exact
++    // seekable file description the caller passed us.
++    if (path_model != nullptr) {
++        static const std::string fd_prefix = "/proc/self/fd/";
++        const std::string path = path_model;
++        if (path.compare(0, fd_prefix.size(), fd_prefix) == 0) {
++            const int fd = std::atoi(path.c_str() + fd_prefix.size());
++            if (fd >= 0) {
++                FILE * file = fdopen(dup(fd), "rb");
++                if (file != nullptr) {
++                    if (fseek(file, 0, SEEK_SET) == 0) {
++                        std::vector<std::string> splits = {};
++                        struct llama_model * model = llama_model_load_from_file_impl(
++                                nullptr, nullptr, nullptr, std::string(), splits, file, params);
++                        fclose(file);
++                        return model;
++                    }
++                    LLAMA_LOG_WARN("%s: descriptor %d is not seekable, loading from the path instead\n", __func__, fd);
++                    fclose(file);
++                } else {
++                    LLAMA_LOG_WARN("%s: could not duplicate descriptor %d (%s), loading from the path instead\n",
++                            __func__, fd, strerror(errno));
++                }
++            }
++        }
++    }
++#endif
+     std::vector<std::string> splits = {};
+     return llama_model_load_from_file_impl(nullptr, nullptr, nullptr, path_model, splits, /*file*/ nullptr, params);
+ }

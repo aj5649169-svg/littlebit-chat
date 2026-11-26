@@ -318,6 +318,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissLoadError() {
         loadError = null
+        copyFallbackAvailable = false
     }
 
     @Volatile private var cancelLoad = false
@@ -350,6 +351,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var approval by mutableStateOf<Approval?>(null)
         private set
     private var sourceFd: android.os.ParcelFileDescriptor? = null
+    private var draftFd: android.os.ParcelFileDescriptor? = null
+    private var lastDirectUri: Uri? = null
+
+    /** Direct loading failed for a seekable document: offer a private copy. */
+    var copyFallbackAvailable by mutableStateOf(false)
+        private set
     private var sendAfterLoad: Pair<String?, String>? = null
 
     fun declineModel() { approval = null; sendAfterLoad = null }
@@ -357,6 +364,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val item = approval ?: return
         approval = null
         openDocument(item.uri, preview = false, copyApproved = item.copy)
+    }
+
+    /** One-tap recovery from the `Model error` banner after a direct load failed. */
+    fun importPrivateCopy() {
+        val uri = lastDirectUri ?: return
+        if (busy) return
+        copyFallbackAvailable = false
+        openDocument(uri, preview = false, copyApproved = true)
     }
     fun pickModel(uri: Uri) = openDocument(uri, preview = true)
     fun loadModelFromUri(uri: Uri) = openDocument(uri, preview = false)
@@ -367,7 +382,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         cancelLoad = false
         canCancelLoad = true
         loadProgress = 0f
-        foreground("Opening document…", ::cancelModelLoad)
+        copyFallbackAvailable = false
+        // No foreground service while picking/opening: Android 14-16 may kill a
+        // service that has not promoted itself in time, so the notification is
+        // only started once token generation begins.
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 loadError = null
@@ -390,7 +408,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     val fd = requireNotNull(resolver.openFileDescriptor(uri, "r")) { "Document unavailable" }
                     var retained = false
                     try {
-                        val file = File("/proc/self/fd/${fd.fd}")
+                        val file = File(ModelPath.fromDescriptor(fd.fd))
                         val seekable = runCatching {
                             android.system.Os.lseek(fd.fileDescriptor, 0, android.system.OsConstants.SEEK_CUR)
                             file.isFile && file.length() > 0
@@ -399,6 +417,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             val header = if (seekable) inspectFile(file) else null
                             approval = Approval(uri, name, if (seekable) file.length() else size, !seekable, header)
                         } else if (!cancelLoad) {
+                            lastDirectUri = uri
                             loadFromFile(file, name, uri.toString(), fd)
                             retained = sourceFd === fd
                         }
@@ -437,26 +456,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         cancelLoad = false
         canCancelLoad = true
         loadProgress = 0f
-        foreground("Configuring draft model…", ::cancelModelLoad)
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 cancelPrewarmSuspend()
                 engineMutex.withLock {
                     engine.clearDraft()
                     draftName = null
+                    draftFd?.close()
+                    draftFd = null
                     if (uri != null) {
                         val app = getApplication<Application>()
                         val name = ModelFiles.queryDocumentMetadata(app, uri).first ?: "Draft model"
                         val descriptor = requireNotNull(app.contentResolver.openFileDescriptor(uri, "r"))
-                        descriptor.use {
-                            val file = File("/proc/self/fd/${it.fd}")
+                        var retained = false
+                        try {
+                            val file = File(ModelPath.fromDescriptor(descriptor.fd))
                             require(file.isFile && file.length() > 0) { "Select a local, seekable draft model" }
                             engine.attachDraft(file.path, settings.threads) { fraction ->
                                 check(!cancelLoad) { "Cancelled" }
                                 loadProgress = fraction
                             }
+                            if (cancelLoad) engine.clearDraft() else {
+                                draftName = name
+                                // Keep the provider's descriptor alive for the engine's lifetime.
+                                draftFd = descriptor
+                                retained = true
+                            }
+                        } finally {
+                            if (!retained) descriptor.close()
                         }
-                        if (cancelLoad) engine.clearDraft() else draftName = name
                     }
                 }
             } catch (e: Exception) {
@@ -472,7 +500,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun loadLocalModel(file: File) {
         if (busy) return
         cancelLoad = false
-        foreground("Loading model…", ::cancelModelLoad)
         canCancelLoad = true
         loadProgress = 0f
         viewModelScope.launch(Dispatchers.IO) {
@@ -581,12 +608,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 activeModelPath = null
             }
             loadStatus = null
+            copyFallbackAvailable = !cancelLoad && lastDirectUri != null
             loadError = if (cancelLoad) null else "Model load failed for $name: ${t.message ?: t.javaClass.simpleName}"
         }
     }
 
     private fun releaseModel() {
         engine.unload()
+        draftFd?.close()
+        draftFd = null
         sourceFd?.close()
         sourceFd = null
     }
@@ -795,11 +825,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         fun load(path: String) = engine.loadModel(path, capacity, settings.threads, 0, settings.batch, false) {
             check(!stopRequested) { "CPU retry cancelled" }
         }
-        modelInfo = if (source.startsWith("content://")) {
-            requireNotNull(getApplication<Application>().contentResolver.openFileDescriptor(Uri.parse(source), "r")).use {
-                load("/proc/self/fd/${it.fd}")
-            }
-        } else load(source)
+        if (!source.startsWith("content://")) {
+            modelInfo = load(source)
+            return
+        }
+        // The engine keeps the provider descriptor for its whole lifetime: a
+        // reopened descriptor must not be closed in a `.use {}` block while the
+        // model is still mapped.
+        val existing = sourceFd
+        if (existing != null) {
+            modelInfo = load(ModelPath.fromDescriptor(existing.fd))
+            return
+        }
+        val reopened = requireNotNull(
+            getApplication<Application>().contentResolver.openFileDescriptor(Uri.parse(source), "r"),
+        )
+        try {
+            modelInfo = load(ModelPath.fromDescriptor(reopened.fd))
+        } catch (t: Throwable) {
+            reopened.close()
+            throw t
+        }
+        sourceFd = reopened
     }
 
     private suspend fun generateReply(prompt: String, draft: SpeculativeDraft?, seed: String = "", replaceIndex: Int? = null, sources: List<String> = emptyList()) = kotlinx.coroutines.coroutineScope {
@@ -902,7 +949,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         private set
     fun compareBackends() {
         if (busy || !isLoaded) return
-        val path = sourceFd?.let { "/proc/self/fd/${it.fd}" } ?: activeModelPath ?: return
+        val path = sourceFd?.let { ModelPath.fromDescriptor(it.fd) } ?: activeModelPath ?: return
         val layers = if (settings.vulkanOffload) settings.vulkanGpuLayers else 0
         comparison = null
         benchmarking = true
@@ -1041,6 +1088,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         finishForeground()
         runCatching { engine.stop() }
         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { engineMutex.withLock { releaseModel(); draftName = null } }
+        runCatching { draftFd?.close() }
+        draftFd = null
         inference.close()
         super.onCleared()
     }

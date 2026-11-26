@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
+import com.littlebit.chat.engine.ModelPath
 import java.io.File
 import java.io.RandomAccessFile
 import kotlin.math.roundToInt
@@ -19,7 +20,7 @@ internal fun inspectWeight(resolver: ContentResolver, uri: Uri): Weight {
     }.orEmpty()
     require(validWeight(name)) { "Select GGUF or SafeTensors weights. Pickle checkpoints are unsupported." }
     return requireNotNull(resolver.openFileDescriptor(uri,"r")).use { fd ->
-        val length = RandomAccessFile("/proc/self/fd/${fd.fd}", "r").use { file ->
+        val length = RandomAccessFile(ModelPath.fromDescriptor(fd.fd), "r").use { file ->
             val n = file.length()
             require(n >= 12)
             if (name.endsWith(".gguf",true)) require(file.readInt() == 0x47475546) { "Invalid GGUF header" }
@@ -75,10 +76,14 @@ internal fun generate(resolver: ContentResolver, slots: List<Weight?>, input: Bi
         IntArray(width*height).also { a -> resized.getPixels(a,0,width,0,0,width,height); if(resized !== input) resized.recycle() }
     }
     val rgb = inputPixels?.let { p -> ByteArray(p.size*3) { i -> (p[i/3] ushr (16-8*(i%3))).toByte() } }
+    // stable-diffusion.cpp receives each weight as /proc/self/fd/<N>. Keep every
+    // ParcelFileDescriptor open until render() returns: closing a provider
+    // descriptor early makes the native open()/mmap() fail on Android 11+ FUSE.
     val fds = mutableListOf<ParcelFileDescriptor>()
     val out = try {
         val files = slots.map { w -> w?.let {
-            val fd = requireNotNull(resolver.openFileDescriptor(it.uri,"r")); fds.add(fd); "/proc/self/fd/${fd.fd}"
+            val fd = requireNotNull(resolver.openFileDescriptor(it.uri,"r")); fds.add(fd)
+            ModelPath.fromDescriptor(fd.fd)
         }.orEmpty() }.toTypedArray()
         SdNative.render(files,text,negative,width,height,steps,strength,seed,
             qwen && slots.first()!!.name.contains("turbo",true),rgb,mask)
