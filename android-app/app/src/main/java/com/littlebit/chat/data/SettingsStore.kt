@@ -14,7 +14,15 @@ import android.content.SharedPreferences
 class SettingsStore(context: Context) {
 
     companion object {
-        const val OFFLINE = "You run offline on this phone. You cannot search the web or check live weather or news. Use supplied information and say when current information is unavailable."
+        /**
+         * Calm, accurate offline clause. The old text ("You cannot search the web
+         * or check live weather or news") made small 1B models refuse ordinary
+         * static questions such as "what is the highest building?".
+         */
+        const val OFFLINE =
+            "Answer general knowledge, coding, math, and creative questions directly using your training knowledge. " +
+                "Only mention that you are offline if the user specifically asks for live, real-time data " +
+                "(such as today's weather, live scores, or breaking news)."
         const val DEFAULT_SYSTEM_PROMPT =
             "You are LittleBit Chat, a helpful on-device AI assistant. Be concise and accurate. $OFFLINE"
     }
@@ -49,6 +57,12 @@ class SettingsStore(context: Context) {
     var searxUrl by label("searx_url", "")
     var linkedModelNames by label("linked_model_names", "{}")
     var lastDocumentName by label("last_document_name", "")
+
+    /** Chat context meter under the composer. */
+    var showContextBar by flag("show_context_bar", true)
+
+    /** Idle auto-unload of the loaded model: "Off", "2 min", "5 min", "10 min". */
+    var idleUnload by label("idle_unload", "5 min")
     var captionMode by label("caption_mode", if (prefs.getBoolean("show_performance", true)) "Minimal" else "Off")
     var batch by number("prefill_batch", 512)
     var flash by flag("flash_attention", true)
@@ -79,6 +93,9 @@ class SettingsStore(context: Context) {
     var threads: Int
         get() = prefs.getInt("threads", 4)
         set(v) { prefs.edit().putInt("threads", v.coerceIn(2, 8)).apply() }
+
+    /** True once the user picked a context size (a 6 GB phone keeps the 2K default). */
+    val contextSizeChosen: Boolean get() = prefs.contains("context_size")
 
     /** Context size 1024–8192. Applies on next model load. */
     var contextSize: Int

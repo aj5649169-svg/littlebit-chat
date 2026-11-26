@@ -91,6 +91,15 @@ Web Search is per-message and opt-in. When it is on and snippets attach for a tu
 
 Device & memory banner, backend and sampling sliders built on the lightweight `LittleBitSlider` (thin track, no tick dots, 16 dp thumb, haptic steps, numeric value pill), appearance (System/Light/Dark/AMOLED, accents, 13/15/17 sp), generation notification, auto-unload policy, KV cache controls, cloud panel (Standard only) and a readable last-crash log with real line breaks.
 
+## What changed in 1.3.1
+
+- **6 GB RAM guard.** `RamBudgetEstimator` scores every local load (`SAFE` / `TIGHT` / `DANGER`) from the file size, context window, Vulkan overhead and live `ActivityManager` figures. TIGHT/DANGER opens a dialog with **Load at 2K Context (Recommended)**, **Load on CPU** and **Load Anyway** instead of freezing the phone in `kswapd0`. First launch on a 6.5 GB-or-smaller device keeps a 2K window unless the user chose one.
+- **Benchmark setup dialog.** Tap Benchmark to pick a backend (`Current` / `CPU` / `Vulkan`) and a preset (`Quick 64/64`, `Standard 128/128`, `Stress 256/256`), see live free/total RAM, get a low-memory warning and cancel a running run. A non-current backend is loaded for the run and restored afterwards.
+- **Calmer offline prompt.** The offline clause now asks for direct answers from training knowledge and mentions being offline only for live data — small 1B models no longer refuse static questions. An intentionally blank system prompt stays blank when web search is off.
+- **Chat display controls.** New **Show context usage bar** toggle and a compact `Context used / max · %` read-out; TTFT now sits beside the speed in message metrics.
+- **Idle auto-unload + thermal notice.** Settings → *Unload idle model* (`Off`, `2 min`, `5 min` default, `10 min`) frees RAM after inactivity (never mid-generation, TTS or benchmark) and leaves a one-tap Reload pill. `ThermalGuard` reads `getThermalHeadroom(10)` with a status fallback and shows a non-blocking *Device warm — throttling likely* pill with **Run anyway**.
+- **Fork and export.** *Fork chat from here* clones the conversation through any reply, and *Export Markdown* writes clean Markdown with reasoning stripped through `ACTION_SEND` — no storage or network permission.
+
 ## What changed in 1.3.0
 
 - **Image Studio input fix.** No component opens `/proc/self/fd/<N>` by string path any more; weights are validated through SAF streams and staged once into app-private storage with progress, atomic writes and a delete button. Top spacing and scrolling resolution chips fix the clipped UI.

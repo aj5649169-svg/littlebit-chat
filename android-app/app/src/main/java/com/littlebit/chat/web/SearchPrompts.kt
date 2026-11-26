@@ -14,6 +14,7 @@ object SearchPrompts {
         "Live web search results are attached for this turn. Answer directly using these results and cite their source URLs. " +
             "Do NOT claim you lack internet access or that you cannot search the web."
 
+
     private val clauses = listOf(SettingsStore.OFFLINE, SEARCH_GROUNDED)
 
     /** Removes either grounding clause so a persona can be reused in both modes. */
@@ -23,9 +24,18 @@ object SearchPrompts {
         return out.replace(Regex("[ \\t]+\\n"), "\n").replace(Regex("\\n{3,}"), "\n\n").trimEnd()
     }
 
-    /** Effective system prompt for the current turn. */
-    fun forMode(prompt: String, grounded: Boolean): String =
-        basePrompt(prompt) + "\n" + if (grounded) SEARCH_GROUNDED else SettingsStore.OFFLINE
+    /**
+     * Effective system prompt for the current turn. An intentionally blank prompt
+     * stays blank when web search is off: forcing a clause into an empty persona
+     * is what made small models answer with refusals. Grounded turns still get the
+     * search instruction, because the excerpts need it.
+     */
+    fun forMode(prompt: String, grounded: Boolean): String {
+        val base = basePrompt(prompt)
+        if (grounded) return listOf(base, SEARCH_GROUNDED).filter { it.isNotBlank() }.joinToString("\n")
+        if (base.isBlank()) return ""
+        return base + "\n" + SettingsStore.OFFLINE
+    }
 
     /** Appends pinned context notes as an explicit, user-authored block. */
     fun withNotes(system: String, notes: List<String>): String =

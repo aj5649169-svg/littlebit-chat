@@ -15,6 +15,7 @@ import androidx.compose.ui.platform.*
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import com.littlebit.chat.data.ChatExport
 import com.littlebit.chat.data.ChatSession
 import com.littlebit.chat.ui.theme.LocalHapticsEnabled
 import java.io.File
@@ -64,9 +65,7 @@ private fun shareMarkdown(context: Context, session: ChatSession) {
     val dir = File(context.cacheDir, "exports/${session.id}").apply { mkdirs() }
     val title = session.title.replace(Regex("[^\\p{L}\\p{N} _-]"), "").take(64).ifBlank { "Chat" }
     val file = File(dir, "$title.md")
-    file.writeText("# ${session.title}\n\n" + session.messages.joinToString("\n\n") {
-        "## ${it.role.replaceFirstChar(Char::uppercase)}\n\n${it.content}"
-    })
+    file.writeText(ChatExport.markdown(session.title, session.messages.toList()))
     val uri = FileProvider.getUriForFile(context, "${context.packageName}.exports", file)
     val intent = Intent(Intent.ACTION_SEND).setType("text/markdown")
         .putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -127,7 +126,7 @@ fun MessageActions(vm: ChatViewModel, index: Int, close: () -> Unit) {
     ModalBottomSheet(onDismissRequest = close) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             TextButton(onClick = { haptic(); clipboard.setText(AnnotatedString(message.content)); close() }) { Text("Copy full message") }
-            TextButton(enabled = !vm.busy, onClick = { close(); vm.fork(index) }) { Text("Fork from here") }
+            TextButton(enabled = !vm.busy, onClick = { close(); vm.fork(index) }) { Text("Fork chat from here") }
             if (message.role == "user") {
                 TextButton(enabled = vm.isLoaded && !vm.busy, onClick = { editing = true }) { Text("Edit & resend") }
             } else {
