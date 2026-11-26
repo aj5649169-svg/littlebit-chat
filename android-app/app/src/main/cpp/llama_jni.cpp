@@ -943,10 +943,13 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
         bool failed = false;
 
         // Re-evaluate the final prompt token even for an exact match: the
-        // sampling loop needs logits for that position.
+        // sampling loop needs logits for that position, and a restored KV cache
+        // that already covers the whole prompt must not skip the only decode
+        // that produces them.
         int lcp = 0;
         while (lcp < n_prompt - 1 && lcp < e->n_past &&
                e->cached_tokens[lcp] == prompt_tokens[lcp]) ++lcp;
+        if (n_prompt > 0) lcp = std::min(lcp, n_prompt - 1);
         auto mem = llama_get_memory(e->ctx);
         if ((lcp == 0 && e->n_past > 0) || (lcp < e->n_past && (llama_memory_seq_pos_min(mem, 0) > 0 ||
                 !llama_memory_seq_rm(mem, 0, lcp, -1)))) {

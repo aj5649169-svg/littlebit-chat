@@ -1313,7 +1313,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         invalidateDraft()
     }
 
-    fun notesForCurrentChat(): List<ContextNote> = Notes.contextLines(notes, currentSession?.id)
+    fun notesForCurrentChat(): List<String> = Notes.contextLines(notes, currentSession?.id)
 
     // -------------------------------------------------------------------- TTS
     fun speak(messageId: String, text: String) {

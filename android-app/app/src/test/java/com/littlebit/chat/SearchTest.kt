@@ -13,8 +13,30 @@ class SearchTest {
         assertTrue(SearchQueryBuilder.isFollowUp("try again"))
         assertTrue(SearchQueryBuilder.isFollowUp("search it"))
         assertTrue(SearchQueryBuilder.isFollowUp("check now"))
-        assertTrue(SearchQueryBuilder.isFollowUp("latest news"))
+        assertTrue(SearchQueryBuilder.isFollowUp("what about that"))
+        assertTrue(SearchQueryBuilder.isFollowUp("do it"))
+        assertTrue(SearchQueryBuilder.isFollowUp("and now"))
+        assertTrue(SearchQueryBuilder.isFollowUp("search this again"))
         assertFalse(SearchQueryBuilder.isFollowUp("Explain the water cycle in detail with a diagram"))
+    }
+
+    @Test fun shortStandaloneSearchesAreNotFollowUps() {
+        assertFalse(SearchQueryBuilder.isFollowUp("weather in Varanasi"))
+        assertFalse(SearchQueryBuilder.isFollowUp("Bitcoin price today"))
+        assertFalse(SearchQueryBuilder.isFollowUp("latest news"))
+        assertFalse(SearchQueryBuilder.isFollowUp("best gaming laptop"))
+    }
+
+    @Test fun standaloneShortSearchKeepsItsOwnQuery() {
+        val history = listOf("Explain photosynthesis in detail for a school project")
+        assertEquals("weather in Varanasi", SearchQueryBuilder.build("weather in Varanasi", history))
+        assertEquals("Bitcoin price today", SearchQueryBuilder.build("Bitcoin price today", history))
+    }
+
+    @Test fun explicitFollowUpStillBorrowsPreviousQuery() {
+        val query = SearchQueryBuilder.build("now you can", listOf("weather in Varanasi"))
+        assertTrue(query.startsWith("weather in Varanasi"))
+        assertTrue(query.endsWith("now you can"))
     }
 
     @Test fun followUpCombinesWithMostRecentSubstantiveQuestion() {

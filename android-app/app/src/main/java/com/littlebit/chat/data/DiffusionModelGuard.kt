@@ -38,7 +38,11 @@ object DiffusionModelGuard {
         return NAME_MARKERS.any { lower.contains(it) }
     }
 
-    /** Best-effort guard: a parse failure means "not detected", never a crash. */
+    /**
+     * Best-effort guard: a parse failure means "not detected", never a crash.
+     * The filename is checked before any stream is opened, so a diffusion file
+     * is rejected without touching SAF.
+     */
     fun detect(context: Context, uri: Uri, name: String): Boolean {
         if (looksLikeName(name)) return true
         if (!name.endsWith(".gguf", true)) return false
@@ -158,8 +162,10 @@ object DiffusionModelGuard {
                 var left = count
                 val scratch = ByteArray(8192)
                 while (left > 0) {
+                    // SAF descriptors can answer a short read; a zero read makes no
+                    // progress and is treated like EOF so inspection always ends.
                     val read = source.read(scratch, 0, minOf(scratch.size.toLong(), left).toInt())
-                    if (read < 0) throw EOFException()
+                    if (read <= 0) throw EOFException()
                     left -= read
                     used += read
                 }
@@ -185,7 +191,7 @@ object DiffusionModelGuard {
                 var offset = 0
                 while (offset < length) {
                     val read = source.read(target, offset, length - offset)
-                    if (read < 0) throw EOFException()
+                    if (read <= 0) throw EOFException()
                     offset += read
                     used += read
                     require(used <= budget) { "GGUF metadata exceeds inspection budget" }

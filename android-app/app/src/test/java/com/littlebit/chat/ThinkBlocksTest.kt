@@ -47,6 +47,35 @@ class ThinkBlocksTest {
         assertEquals("plain", ThinkBlocks.strip("plain"))
     }
 
+    @Test fun leadingClosedThoughtKeepsEveryAnswerCharacter() {
+        val split = ThinkBlocks.split("<thinking>weigh options</thinking>Hello")
+        assertEquals("weigh options", split.think)
+        assertEquals("Hello", split.answer)
+        assertEquals("Hello", ThinkBlocks.strip("<thinking>weigh options</thinking>Hello"))
+
+        val shortForm = ThinkBlocks.split(ThinkBlocks.SHORT_OPEN + "plan" + ThinkBlocks.SHORT_CLOSE + "Hello")
+        assertEquals("plan", shortForm.think)
+        assertEquals("Hello", shortForm.answer)
+    }
+
+    @Test fun leadingUnclosedThoughtKeepsAnswerEmpty() {
+        val split = ThinkBlocks.split("<thinking>step 1")
+        assertEquals("step 1", split.think)
+        assertEquals("", split.answer)
+
+        val shortForm = ThinkBlocks.split(ThinkBlocks.SHORT_OPEN + "step 1")
+        assertEquals("step 1", shortForm.think)
+        assertEquals("", shortForm.answer)
+
+        // Streaming a leading block one character at a time never leaks reasoning text.
+        val raw = "<thinking>step 1"
+        for (end in 1..raw.length) {
+            val partial = ThinkBlocks.split(raw.substring(0, end))
+            assertFalse(partial.answer.contains("step"))
+        }
+        assertEquals("step 1", ThinkBlocks.split(raw).think)
+    }
+
     @Test fun noThinkAndSentenceGuardsStillHold() {
         assertEquals("hi /no_think", ThinkBlocks.withNoThink("hi", "qwen3"))
         assertEquals("hi", ThinkBlocks.withNoThink("hi", "llama"))

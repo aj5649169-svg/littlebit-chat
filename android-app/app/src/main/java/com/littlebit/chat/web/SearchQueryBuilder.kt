@@ -10,23 +10,25 @@ package com.littlebit.chat.web
 object SearchQueryBuilder {
 
     private val FOLLOW_UP_PHRASES = setOf(
-        "now you can", "try again", "search it", "check now", "and now", "do it",
-        "go on", "continue", "what about it", "look it up", "search again",
+        "now you can", "try again", "search it", "check now", "and now",
+        "what about now", "what about that", "do it", "go on",
     )
 
-    private val REFERENTIAL = listOf(
-        "it", "that", "this", "them", "those", "there", "again", "now",
-        "latest", "current", "today", "news",
+    /**
+     * Pronouns and cues that can only point at the previous turn. A short
+     * message without one ("weather in Varanasi", "Bitcoin price today") is a
+     * complete search on its own and must not inherit earlier context.
+     */
+    private val REFERENTIAL = setOf(
+        "it", "that", "this", "they", "them", "there", "he", "she", "same",
     )
 
     fun isFollowUp(text: String): Boolean {
         val clean = text.trim().lowercase().trim(' ', '.', ',', '!', '?', ':', ';')
         if (clean.isEmpty()) return false
-        if (clean in FOLLOW_UP_PHRASES) return true
         if (FOLLOW_UP_PHRASES.any { clean == it || clean.startsWith("$it ") }) return true
         val words = clean.split(Regex("\\s+")).filter { it.isNotBlank() }
-        if (words.size <= 4) return true
-        return words.size <= 6 && REFERENTIAL.any { word -> words.any { it == word } }
+        return words.size <= 4 && words.any { word -> word in REFERENTIAL }
     }
 
     /**
@@ -44,6 +46,7 @@ object SearchQueryBuilder {
         return combined.replace(Regex("\\s+"), " ").trim().take(maxChars.coerceAtLeast(1)).trim()
     }
 
+    /** Anything longer than a bare greeting can carry search context. */
     private fun isSubstantive(text: String): Boolean =
-        text.split(Regex("\\s+")).count { it.isNotBlank() } > 3
+        text.split(Regex("\\s+")).count { it.isNotBlank() } > 1
 }

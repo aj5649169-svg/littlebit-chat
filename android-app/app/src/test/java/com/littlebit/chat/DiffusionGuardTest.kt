@@ -5,6 +5,8 @@ import org.junit.Assert.*
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.InputStream
 
 class DiffusionGuardTest {
 
@@ -41,10 +43,51 @@ class DiffusionGuardTest {
         assertTrue(DiffusionModelGuard.looksLikeGguf(ByteArrayInputStream(gguf(arch = "sdxl"))))
     }
 
+    @Test fun filenameIsCheckedBeforeAnyStreamIsOpened() {
+        // A missing file cannot be opened, so `true` proves the name wins first.
+        assertTrue(DiffusionModelGuard.detect(File("flux1-dev-Q4_K_M.gguf")))
+        assertTrue(DiffusionModelGuard.detect(File("stable-diffusion-v1-5-inpainting.safetensors")))
+        assertFalse(DiffusionModelGuard.detect(File("missing-chat-model.gguf")))
+    }
+
+    @Test fun shortSafReadsStillScanTheWholeMetadataBlock() {
+        val gguf = gguf(
+            arch = "qwen3",
+            keys = listOf("general.name"),
+            tensors = listOf("model.diffusion_model.input_blocks.0.weight"),
+        )
+        assertTrue(DiffusionModelGuard.looksLikeGguf(DripStream(gguf, chunk = 1)))
+    }
+
+    @Test fun zeroByteSafReadStopsCleanlyInsteadOfSpinning() {
+        val truncated = gguf(arch = null, keys = listOf("general.name"), tensors = emptyList())
+        val cut = truncated.copyOf(truncated.size - 8)
+        assertFalse(DiffusionModelGuard.looksLikeGguf(DripStream(cut, chunk = 4, padZeroAtEnd = true)))
+    }
+
     @Test fun garbageNeverThrows() {
         assertFalse(DiffusionModelGuard.looksLikeGguf(ByteArrayInputStream(ByteArray(0))))
         assertFalse(DiffusionModelGuard.looksLikeGguf(ByteArrayInputStream("not a gguf at all".toByteArray())))
         assertFalse(DiffusionModelGuard.looksLikeGguf(ByteArrayInputStream(ByteArray(64) { 7 })))
+    }
+
+    /** SAF-like stream: bounded reads, and optionally 0 instead of -1 at EOF. */
+    private class DripStream(
+        private val data: ByteArray,
+        private val chunk: Int,
+        private val padZeroAtEnd: Boolean = false,
+    ) : InputStream() {
+        private var pos = 0
+
+        override fun read(): Int = if (pos < data.size) data[pos++].toInt() and 0xFF else -1
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (pos >= data.size) return if (padZeroAtEnd) 0 else -1
+            val n = minOf(chunk, len, data.size - pos)
+            System.arraycopy(data, pos, b, off, n)
+            pos += n
+            return n
+        }
     }
 
     private fun gguf(
