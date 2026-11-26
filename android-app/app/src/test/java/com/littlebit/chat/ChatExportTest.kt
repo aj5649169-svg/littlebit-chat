@@ -2,6 +2,7 @@ package com.littlebit.chat
 
 import com.littlebit.chat.data.ChatExport
 import com.littlebit.chat.data.ChatMessage
+import com.littlebit.chat.engine.ThinkBlocks
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -40,14 +41,15 @@ class ChatExportTest {
     @Test fun markdownStripsReasoningAndKeepsAnswers() {
         val messages = listOf(
             ChatMessage("user", "Hi"),
-            ChatMessage("assistant", " thinkingsecret reasoning</think>Hello!"),
+            // Tags are built from ThinkBlocks so a literal angle bracket cannot be lost.
+            ChatMessage("assistant", ThinkBlocks.SHORT_OPEN + "secret reasoning" + ThinkBlocks.SHORT_CLOSE + "Hello!"),
         )
         val md = ChatExport.markdown("Greeting", messages)
         assertTrue(md.startsWith("# Greeting"))
         assertTrue(md.contains("## User"))
         assertTrue(md.contains("Hello!"))
         assertFalse(md.contains("secret reasoning"))
-        assertFalse(md.contains("thinking"))
+        assertFalse(md.contains("think"))
     }
 
     @Test fun markdownMarksCutOffRepliesAndSearches() {

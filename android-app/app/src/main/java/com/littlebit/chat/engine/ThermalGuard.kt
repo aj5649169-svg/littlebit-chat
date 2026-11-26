@@ -25,12 +25,15 @@ object ThermalGuard {
      * `getThermalHeadroom` failing), in which case only the thermal status counts.
      */
     fun classify(thermalStatus: Int, headroom: Float): Level {
-        val severe = thermalStatus >= PowerManager.THERMAL_STATUS_SEVERE
-        val nearZero = !headroom.isNaN() && headroom >= WARM_HEADROOM
-        val warmStatus = thermalStatus >= PowerManager.THERMAL_STATUS_MODERATE
+        // 1.0 is the documented THERMAL_STATUS_SEVERE threshold, and 0.95 already
+        // means moderate-or-worse on Google's ADPF guidance, so only 1.0 is severe.
+        val severe = thermalStatus >= PowerManager.THERMAL_STATUS_SEVERE ||
+            (!headroom.isNaN() && headroom >= 1f)
+        val warm = (!headroom.isNaN() && headroom >= WARM_HEADROOM) ||
+            thermalStatus >= PowerManager.THERMAL_STATUS_MODERATE
         return when {
-            severe || nearZero -> Level.SEVERE
-            warmStatus -> Level.WARM
+            severe -> Level.SEVERE
+            warm -> Level.WARM
             else -> Level.NONE
         }
     }

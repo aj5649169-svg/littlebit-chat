@@ -18,8 +18,9 @@ class ThermalGuardTest {
     }
 
     @Test fun nearZeroHeadroomWarnsEvenWithoutStatus() {
-        assertEquals(Level.SEVERE, ThermalGuard.classify(none, 0.96f))
+        assertEquals(Level.WARM, ThermalGuard.classify(none, 0.96f))
         assertEquals(Level.SEVERE, ThermalGuard.classify(none, 1f))
+        assertEquals(Level.SEVERE, ThermalGuard.classify(none, 1.2f))
         assertTrue(ThermalGuard.shouldWarn(none, 0.95f))
     }
 

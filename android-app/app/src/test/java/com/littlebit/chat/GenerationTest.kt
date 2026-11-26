@@ -14,8 +14,9 @@ class GenerationTest {
         assertEquals("4.2s", duration(4200.0))
         assertEquals("1m 0s", duration(60000.0))
         assertEquals("", timing.caption("Off"))
-        assertEquals("13.9 t/s (1m 24s)", timing.caption("Minimal"))
-        assertEquals("Prompt: 108.6 t/s (1.4s) · Gen: 13.9 t/s (1m 24s)", timing.caption("Detailed"))
+        // TTFT rides beside the rate in the finalized metrics.
+        assertEquals("13.9 t/s (1m 24s) · 1420 ms TTFT", timing.caption("Minimal"))
+        assertEquals("Prompt: 108.6 t/s (1.4s) · Gen: 13.9 t/s (1m 24s) · 1420 ms TTFT", timing.caption("Detailed"))
     }
 
     @Test fun outputLimitSurvivesSettingsRecreation() {
