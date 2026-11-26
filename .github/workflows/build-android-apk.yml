@@ -144,8 +144,10 @@ jobs:
             echo "zipalign: $(basename "$apk")"
             "$build_tools/zipalign" -c -P 16 -v 4 "$apk"
             "$build_tools/apksigner" verify --verbose "$apk"
-            "$build_tools/aapt2" dump badging "$apk" | grep -E "^(package|native-code):"
-            "$build_tools/aapt2" dump badging "$apk" | grep -q "native-code: 'arm64-v8a'"
+            badging="$RUNNER_TEMP/apks/$edition-badging.txt"
+            "$build_tools/aapt2" dump badging "$apk" > "$badging"
+            grep -E "^(package|native-code):" "$badging"
+            grep -q "native-code: 'arm64-v8a'" "$badging"
             unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libsd_jni.so'
             unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libllama_jni.so'
             rm -rf "$RUNNER_TEMP/apks/$edition-libs"
@@ -153,17 +155,27 @@ jobs:
             mapfile -t libs < <(find "$RUNNER_TEMP/apks/$edition-libs" -name '*.so' -print | sort)
             test "${#libs[@]}" -gt 0
             for lib in "${libs[@]}"; do
-              "$readelf" -lW "$lib" | grep -q ' LOAD ' || {
-                echo "::error::$edition $(basename "$lib") has no ELF LOAD segments"
+              name=$(basename "$lib")
+              # Read the program headers into a file first: `readelf | grep -q`
+              # would let grep exit early and SIGPIPE the reader under pipefail.
+              headers="$RUNNER_TEMP/apks/$edition-$name.headers"
+              "$readelf" -lW "$lib" > "$headers"
+              grep -qE '(^|[[:space:]])LOAD[[:space:]]' "$headers" || {
+                echo "::error::$edition $name has no ELF LOAD segments"
                 exit 1
               }
-              while read -r align; do
+              mapfile -t aligns < <(awk '$1 == "LOAD" { print $NF }' "$headers" | sort -u)
+              test "${#aligns[@]}" -gt 0 || {
+                echo "::error::$edition $name has no ELF LOAD segments"
+                exit 1
+              }
+              for align in "${aligns[@]}"; do
+                echo "LOAD alignment $name: $align"
                 (( align >= 16384 )) || {
-                  echo "::error::$edition $(basename "$lib") LOAD alignment $align is below 16 KiB"
+                  echo "::error::$edition $name LOAD alignment $align is below 16 KiB"
                   exit 1
                 }
-              done < <("$readelf" -lW "$lib" | awk '$1 == "LOAD" { print $NF }' | sort -u)
-              echo "16 KiB ELF pages OK: $(basename "$lib")"
+              done
             done
             cp "$apk" "$RUNNER_TEMP/apks/littlebit-chat-$edition-arm64.apk"
             echo "::endgroup::"
