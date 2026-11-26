@@ -205,7 +205,7 @@
       "sizeGB": 1.88,
       "url": "https://huggingface.co/gpustack/stable-diffusion-v1-5-inpainting-GGUF/blob/main/stable-diffusion-v1-5-inpainting-Q8_0.gguf",
       "tags": ["image"],
-      "ramWarning": "Recommended for 6–8 GB phones (Exynos 1380 and similar). Single 1.9 GB Q8_0 GGUF for stable-diffusion.cpp — no .ckpt checkpoint. Paint a mask over the photo and describe the change.",
+      "ramWarning": "Recommended for 6–8 GB phones (Exynos 1380 and similar). Single 1.9 GB Q8_0 GGUF for stable-diffusion.cpp — no legacy pickle checkpoint. Paint a mask over the photo and describe the change.",
       "recommended": true,
       "minRamGb": 6,
       "recommendedRamGb": 8

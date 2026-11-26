@@ -20,9 +20,22 @@ class ImageHubTest {
         assertTrue(json.contains("SD 1.5 Inpainting"))
         assertTrue(json.contains("SD-Turbo"))
         assertTrue(json.contains("Qwen-Image-2.1-Turbo (2-Bit)"))
-        assertTrue(json.contains("stable-diffusion-v1-5/stable-diffusion-inpainting"))
+        assertTrue(json.contains("gpustack/stable-diffusion-v1-5-inpainting-GGUF"))
+        assertTrue(json.contains("stable-diffusion-v1-5-inpainting-Q8_0.gguf"))
         assertTrue(json.contains("stabilityai/sd-turbo"))
         assertTrue(json.contains("AtomicChat/Qwen-Image-2.1-Turbo-GGUF"))
+    }
+
+    @Test fun everyImageWeightIsALoadableFormat() {
+        // Image Studio only opens GGUF or SafeTensors weights; a .ckpt link would
+        // download a file the engine refuses to load.
+        assertFalse(json.contains(".ckpt"))
+        for (entry in json.split("{")) {
+            if (!entry.contains("\"tier\": \"Image\"")) continue
+            val url = Regex("\"url\": \"([^\"]+)\"").find(entry)?.groupValues?.get(1) ?: continue
+            if (!url.startsWith("https://huggingface.co/")) continue
+            assertTrue("Unsupported image weight: $url", url.endsWith(".gguf") || url.endsWith(".safetensors"))
+        }
     }
 
     @Test fun twoBitQwenImageCarriesAnHonestLowRamWarning() {
