@@ -26,7 +26,9 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     env:
-      NDK_VERSION: "26.1.10909125"
+      # NDK r28+ links arm64-v8a shared libraries with 16 KiB ELF alignment by
+      # default, which Android 15/16 16 KiB-page devices require.
+      NDK_VERSION: "28.2.13676358"
       GRADLE_SHA256: "5b9c5eb3f9fc2c94abaea57d90bd78747ca117ddbbf96c859d3741181a12bf2a"
       GRADLE_VERSION: "8.10"
       VULKAN_SDK_VERSION: "1.4.363.0"
@@ -109,12 +111,47 @@ jobs:
         run: |
           gradle wrapper --gradle-version "${GRADLE_VERSION}" --distribution-type bin --gradle-distribution-sha256-sum "$GRADLE_SHA256"
           ./gradlew --no-daemon --stacktrace :app:assembleRelease
+
+      - name: Verify offline and standard release APKs (16 KiB ELF pages)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: |
+          set -euo pipefail
+          build_tools="$ANDROID_HOME/build-tools/35.0.0"
+          readelf="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          test -x "$readelf"
           mkdir -p "$RUNNER_TEMP/apks"
           for edition in offline standard; do
-            apk="app/build/outputs/apk/$edition/release/app-$edition-release.apk"
-            "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$apk"
+            apk="android-app/app/build/outputs/apk/$edition/release/app-$edition-release.apk"
+            echo "::group::Verifying $edition release APK"
+            test -f "$apk"
+            unzip -t "$apk" > /dev/null
+            echo "zipalign: $(basename "$apk")"
+            "$build_tools/zipalign" -c -P 16 -v 4 "$apk"
+            "$build_tools/apksigner" verify --verbose "$apk"
+            "$build_tools/aapt2" dump badging "$apk" | grep -E "^(package|native-code):"
+            "$build_tools/aapt2" dump badging "$apk" | grep -q "native-code: 'arm64-v8a'"
             unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libsd_jni.so'
+            unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libllama_jni.so'
+            rm -rf "$RUNNER_TEMP/apks/$edition-libs"
+            unzip -q "$apk" 'lib/arm64-v8a/*.so' -d "$RUNNER_TEMP/apks/$edition-libs"
+            mapfile -t libs < <(find "$RUNNER_TEMP/apks/$edition-libs" -name '*.so' -print | sort)
+            test "${#libs[@]}" -gt 0
+            for lib in "${libs[@]}"; do
+              "$readelf" -lW "$lib" | grep -q ' LOAD ' || {
+                echo "::error::$edition $(basename "$lib") has no ELF LOAD segments"
+                exit 1
+              }
+              while read -r align; do
+                (( align >= 16384 )) || {
+                  echo "::error::$edition $(basename "$lib") LOAD alignment $align is below 16 KiB"
+                  exit 1
+                }
+              done < <("$readelf" -lW "$lib" | awk '$1 == "LOAD" { print $NF }' | sort -u)
+              echo "16 KiB ELF pages OK: $(basename "$lib")"
+            done
             cp "$apk" "$RUNNER_TEMP/apks/littlebit-chat-$edition-arm64.apk"
+            echo "::endgroup::"
           done
 
       - name: Upload APK artifact
@@ -147,6 +184,7 @@ jobs:
           name: LittleBit Chat ${{ github.ref_name }}
           body: |
             Choose Offline for zero network permission, or Standard for optional per-message web search.
+            Both editions ship 16 KiB ELF-aligned arm64 libraries (NDK r28c) for Android 15-16 devices.
             Includes Image Studio, direct GGUF loading, RAM estimates, backend comparison, chat forks, and Android text actions.
             Download the APK below to sideload. The matching .sha256 file verifies the download.
           files: |

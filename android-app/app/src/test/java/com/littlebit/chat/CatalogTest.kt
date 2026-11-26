@@ -41,6 +41,17 @@ class CatalogTest {
         assertTrue(usableRamGb(12 * gb) < 12.0)
     }
 
+    @Test fun usableEstimateComesFromMeasuredTotalRamNotTheRoundedTier() {
+        // An "8 GB" phone reports ~7.4 GB and a "12 GB" phone ~11.5 GB. Deriving
+        // the budget from the rounded tier used to inflate both by 0.5-0.6 GB.
+        assertEquals(5.9, usableRamGb(7_400_000_000L), 0.01)
+        assertEquals(9.5, usableRamGb(11_500_000_000L), 0.01)
+        assertEquals(0.0, usableRamGb(0L), 0.0)
+        assertTrue(usableRamGb(7_400_000_000L) < 6.0)
+        assertEquals("Great fit", catalogFit(3.5, 7_400_000_000L, minimum = 6, recommended = 8))
+        assertEquals("Tight — use 2K ctx", catalogFit(3.5, 5_800_000_000L, minimum = 6, recommended = 8))
+    }
+
     @Test fun headerInspectionDoesNotNeedTensorData() {
         val b = ByteBuffer.allocate(256).order(ByteOrder.LITTLE_ENDIAN)
         fun string(s: String) { val bytes = s.toByteArray(); b.putLong(bytes.size.toLong()); b.put(bytes) }

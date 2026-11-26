@@ -19,11 +19,38 @@ class ForegroundServiceTest {
     }
 
     @Test fun serviceOnlyStopsItselfAfterTheForegroundPromotion() {
-        assertTrue(ForegroundServicePolicy.shouldStopSelf(ForegroundServicePolicy.ACTION_STOP, operationPending = false))
-        assertFalse(ForegroundServicePolicy.shouldStopSelf(ForegroundServicePolicy.ACTION_STOP, operationPending = true))
-        assertFalse(ForegroundServicePolicy.shouldStopSelf(null, operationPending = false))
+        assertTrue(
+            ForegroundServicePolicy.shouldStopSelf(
+                ForegroundServicePolicy.ACTION_STOP, operationPending = false, versionMatches = true,
+            ),
+        )
+        assertFalse(
+            ForegroundServicePolicy.shouldStopSelf(
+                ForegroundServicePolicy.ACTION_STOP, operationPending = true, versionMatches = true,
+            ),
+        )
+        assertFalse(
+            ForegroundServicePolicy.shouldStopSelf(
+                null, operationPending = false, versionMatches = true,
+            ),
+        )
         assertTrue(ForegroundServicePolicy.isStopAction(ForegroundServicePolicy.ACTION_STOP))
         assertFalse(ForegroundServicePolicy.isStopAction(null))
+    }
+
+    @Test fun staleStopCannotEndANewerGeneration() {
+        // start -> stop -> start: the second start bumped revision, so the stop
+        // intent from the first generation must be ignored.
+        assertFalse(
+            ForegroundServicePolicy.shouldStopSelf(
+                ForegroundServicePolicy.ACTION_STOP, operationPending = false, versionMatches = false,
+            ),
+        )
+        assertTrue(
+            ForegroundServicePolicy.shouldStopSelf(
+                ForegroundServicePolicy.ACTION_STOP, operationPending = false, versionMatches = true,
+            ),
+        )
     }
 
     @Test fun foregroundTypeIsOnlySetWhereTheApiSupportsIt() {

@@ -94,7 +94,12 @@ class InferenceForegroundService : Service() {
         val version = intent?.getIntExtra("revision", -1) ?: -1
         val action = intent?.action
         if (ForegroundServicePolicy.shouldCancelOperation(action, version == revision)) operation?.invoke()
-        if (ForegroundServicePolicy.shouldStopSelf(action, operation != null)) stopSelfResult(startId)
+        // Only the stop that belongs to the latest start epoch may end the
+        // service: a stale ACTION_STOP from a rapid start→stop→start burst must
+        // not tear down the newer foreground notification.
+        if (ForegroundServicePolicy.shouldStopSelf(action, operation != null, version == revision)) {
+            stopSelfResult(startId)
+        }
         return START_NOT_STICKY
     }
 

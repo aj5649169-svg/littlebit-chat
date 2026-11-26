@@ -22,8 +22,15 @@ internal object ForegroundServicePolicy {
     fun shouldCancelOperation(action: String?, versionMatches: Boolean): Boolean =
         isStopAction(action) && versionMatches
 
-    fun shouldStopSelf(action: String?, operationPending: Boolean): Boolean =
-        isStopAction(action) && !operationPending
+    /**
+     * A stop intent may only end the service for the revision that requested it
+     * and only when the service has already been promoted to the foreground (the
+     * caller promotes before consulting this). A stale stop from an earlier
+     * start→stop→start burst must not kill the newer notification, and a stop
+     * must never arrive before `startForeground()` completed.
+     */
+    fun shouldStopSelf(action: String?, operationPending: Boolean, versionMatches: Boolean): Boolean =
+        isStopAction(action) && versionMatches && !operationPending
 
     /** Must match android:foregroundServiceType="specialUse" in the manifest. */
     fun foregroundServiceType(sdkInt: Int): Int =

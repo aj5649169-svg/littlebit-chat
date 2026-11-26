@@ -54,6 +54,10 @@ android {
                     "-DANDROID_STL=c++_shared",
                     "-DCMAKE_BUILD_TYPE=Release",
                     "-DGGML_VULKAN=ON",
+                    // 16 KiB ELF LOAD alignment for Android 15/16 16 KiB-page devices.
+                    // NDK r28 defaults this on; keep it explicit so the requirement
+                    // survives an NDK downgrade.
+                    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
                 )
                 val vulkanSdk = System.getenv("VULKAN_SDK")
                 val vulkanInclude = System.getenv("VULKAN_INCLUDE_DIR")
@@ -83,8 +87,9 @@ android {
         }
     }
 
-    // Keep in sync with .github/workflows/build-android-apk.yml (sdkmanager ndk;26.1.10909125).
-    ndkVersion = "26.1.10909125"
+    // Keep in sync with .github/workflows/build-android-apk.yml (sdkmanager ndk;28.2.13676358).
+    // NDK r28+ produces 16 KiB-aligned arm64 .so files by default.
+    ndkVersion = "28.2.13676358"
 
     externalNativeBuild {
         cmake {

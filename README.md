@@ -26,7 +26,7 @@ The catalog groups models into **8B spotlight**, **Compact**, **Large 2-bit**, *
 
 - **8B spotlight.** Qwen3 8B, DeepSeek R1 0528 Qwen3 8B, Ministral 3 8B, Llama 3.1 8B and Qwen2.5 Coder 7B at roughly 2.8–3.8 GB. A 3.5 GB 2-bit 8B model is `Great fit` on a 12 GB phone and stays visible with **Fits my phone** on.
 - **Image.** Verified Hugging Face links that open in the browser, so the Offline edition keeps zero internet permission:
-  - **SD 1.5 Inpainting** — recommended for 6–8 GB phones such as the Exynos 1380; brush-mask photo inpainting.
+  - **SD 1.5 Inpainting** — recommended for 6–8 GB phones such as the Exynos 1380; brush-mask photo inpainting. Ships as a single 1.9 GB `Q8_0` **`.gguf`** for the bundled stable-diffusion.cpp (no unsupported `.ckpt` checkpoint).
   - **SD-Turbo** — 1–4 step text-to-image at 512 px on 6–8 GB phones.
   - **Qwen-Image-2.1-Turbo (2-Bit)** — `AD-Q2_K`/`Q2_K` denoiser plus a 2-bit Qwen3-VL-8B text encoder, the Qwen Image 2.1 VAE and an optional `mmproj-F16` for photo edits. Experimental low-RAM 2-bit mode with stage-by-stage memory freeing: 8 GB+ recommended, softer detail than 4-bit.
 
@@ -42,9 +42,16 @@ The bundled `stable-diffusion.cpp` engine runs fully on-device. SD 1.5 / SD-Turb
 - **Chat tools.** Attach text or code, use prompt templates, `/calc`, optional local clock context, system personas, edit-and-resend, regenerate, continue, forks, pin/rename/search chats, and Markdown export.
 - **Modern Settings.** Device & memory banner, backend and sampling sliders, appearance (System/Light/Dark/AMOLED, accents, 13/15/17 sp), generation notification, auto-unload policy, and a readable last-crash log with real line breaks.
 
-## Display and navigation fixes in 1.2.1
+## What changed in 1.2.1
 
-The Model Hub shows an accurate subtitle describing Direct zero-copy loading versus optional private copies, and the settings memory tiers now use the same names as the catalog (**Compact**, **8B spotlight**, **Large 2-bit**). The last-crash card renders actual newlines. **Image Studio** sits in the **☰** drawer with its own icon, opens without a model loaded, and returns to Chat on system Back.
+- **16 KiB ELF alignment (Android 15–16).** Both editions build with **NDK r28c (`28.2.13676358`)**, which links arm64 shared libraries with 16 KiB `LOAD` alignment. CI verifies **both** the Offline and Standard release APKs with `unzip -t`, `zipalign -c -P 16 4`, `apksigner verify --verbose`, `aapt2 dump badging` and an `llvm-readelf` 16 KiB `LOAD` alignment check on every packaged `.so`.
+- **No leaked SAF descriptors.** Provider `ParcelFileDescriptor`s are closed on load failure, model replacement and unload, and the draft-model descriptor is released before a replacement is opened. Only a directly loaded model keeps its document descriptor open, for as long as the engine maps it.
+- **Foreground-service stop race.** A rapid start→stop burst can no longer end the service before `startForeground()` completes, and a stale stop intent cannot tear down a newer notification: stop intents are revision-gated and only the latest start epoch may stop the service.
+- **No stale private-copy prompts.** The one-tap **Import private copy instead** recovery now appears only for the document that actually failed, and is cleared on unload, unlink, dismissal or after a successful copy. Direct-loadable files always read **Load directly · 0 B copied**.
+- **Honest RAM estimates.** The usable budget is derived from the measured `totalMem` instead of the rounded advertised tier, so a "12 GB" phone is planned at ~9.5 GB and an "8 GB" phone at ~5.9 GB rather than 6.5 GB. 2-bit 8B models classify **Great fit** on 8–12 GB phones and **Tight — use 2K ctx** on 6 GB.
+- **Supported inpainting download.** The SD 1.5 Inpainting catalog entry points at a public `Q8_0` `.gguf` (1.9 GB) rather than an unsupported `.ckpt` checkpoint.
+- **Crash-log normalization.** Literal `\n`, `\r\n` and `\t` escapes written by v1.2.0 and real newlines are both normalized, so the Settings crash card renders real lines for old and new logs.
+- **Model Hub and navigation.** The subtitle describes Direct zero-copy loading versus optional private copies, the settings memory tiers use the catalog names (**Compact**, **8B spotlight**, **Large 2-bit**), and **Image Studio** sits in the **☰** drawer with its own icon, opens without a model loaded, and returns to Chat on system Back.
 
 ## Device testing status
 
@@ -54,6 +61,6 @@ Tested on Android 16 with a 12 GB phone and an 8 GB Exynos 1380 device: direct G
 
 Clone with `git clone --recurse-submodules https://github.com/aj5649169-svg/littlebit-chat.git`, then run `bash scripts/apply-patches.sh` from the root. It applies `patches/0001-littlebit.diff` (LittleBit `Q1_0`) and `patches/0002-android-saf-fd.diff` (Android `/proc/self/fd/<N>` loading with buffered-read fallback when a FUSE descriptor cannot be mapped) against `llama.cpp` `6aee508`.
 
-The [Android build workflow](.github/workflows/build-android-apk.yml) pins JDK 17, Android SDK/NDK, Gradle 8.10 and the host Vulkan shader compiler, runs the offline and standard unit tests, builds `:app:assembleRelease` for both flavors, verifies the ARM64 APK signatures and checks that `lib/arm64-v8a/libsd_jni.so` is packaged. Pushes to `main` publish a build artifact; version tags publish both APKs with SHA-256 checksums. Release builds need `ANDROID_RELEASE_KEYSTORE_BASE64`, `ANDROID_RELEASE_STORE_PASSWORD`, `ANDROID_RELEASE_KEY_ALIAS` and `ANDROID_RELEASE_KEY_PASSWORD` as repository secrets; keep the same signing key for updates.
+The [Android build workflow](.github/workflows/build-android-apk.yml) pins JDK 17, Android SDK, **NDK r28c (`28.2.13676358`)** for 16 KiB-aligned arm64 libraries, Gradle 8.10 and the host Vulkan shader compiler, runs the offline and standard unit tests, builds `:app:assembleRelease` for both flavors, then verifies **each** APK with `unzip -t`, `zipalign -c -P 16 4`, `apksigner verify --verbose`, `aapt2 dump badging` and a 16 KiB ELF `LOAD` alignment check on every packaged `.so` (`libllama_jni.so`, `libsd_jni.so`, `libc++_shared.so`). Pushes to `main` publish a build artifact; version tags publish both APKs with SHA-256 checksums. Release builds need `ANDROID_RELEASE_KEYSTORE_BASE64`, `ANDROID_RELEASE_STORE_PASSWORD`, `ANDROID_RELEASE_KEY_ALIAS` and `ANDROID_RELEASE_KEY_PASSWORD` as repository secrets; keep the same signing key for updates.
 
 Built on [llama.cpp](https://github.com/ggml-org/llama.cpp) (pinned at `6aee508`), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), [Arm KleidiAI](https://github.com/ARM-software/kleidiai), and the LittleBit work from [GeniusDevam/littlebit-gguf](https://github.com/GeniusDevam/littlebit-gguf). The upstream MIT notice is preserved in [LICENSE](LICENSE). Third-party components and separately downloaded model weights retain their respective licenses.

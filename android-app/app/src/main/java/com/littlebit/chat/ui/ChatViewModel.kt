@@ -319,6 +319,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun dismissLoadError() {
         loadError = null
         copyFallbackAvailable = false
+        // Dropping the banner also drops the one-tap retry for that document.
+        lastDirectUri = null
     }
 
     @Volatile private var cancelLoad = false
@@ -342,6 +344,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         docs.remove(source)
         settings.linkedModelNames = docs.toString()
         if (settings.lastModelPath == source) settings.lastModelPath = null
+        if (lastDirectUri?.toString() == source) lastDirectUri = null
+        copyFallbackAvailable = false
         runCatching { getApplication<Application>().contentResolver.releasePersistableUriPermission(
             Uri.parse(source), android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
     }
@@ -400,6 +404,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         loadProgress = if (total > 0) done.toFloat()/total else 0f
                     }
                     loadFromFile(file)
+                    // The document now lives in app storage: no direct-load retry applies.
+                    lastDirectUri = null
+                    copyFallbackAvailable = false
                     localModels = ModelFiles.listLocalModels(app)
                 } else {
                     // A denied persistent grant does not imply that the provider is a pipe.
@@ -460,10 +467,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 cancelPrewarmSuspend()
                 engineMutex.withLock {
-                    engine.clearDraft()
                     draftName = null
-                    draftFd?.close()
-                    draftFd = null
+                    try {
+                        engine.clearDraft()
+                    } finally {
+                        // The engine no longer maps the old draft: release its
+                        // descriptor even if clearing fails, so a replacement or a
+                        // cancelled pick cannot leak it.
+                        draftFd?.close()
+                        draftFd = null
+                    }
                     if (uri != null) {
                         val app = getApplication<Application>()
                         val name = ModelFiles.queryDocumentMetadata(app, uri).first ?: "Draft model"
@@ -557,7 +570,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
             cancelPrewarmSuspend()
             engineMutex.withLock {
-                if (engine.isLoaded) releaseModel()
+                // Always release: a previous model and the provider descriptor it
+                // mapped must be gone before this load adopts a new one.
+                releaseModel()
                 draftName = null
             }
             modelInfo = null
@@ -596,29 +611,50 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             loadError = null
             if (source.startsWith("content://")) {
                 settings.linkedModelNames = org.json.JSONObject(settings.linkedModelNames).put(source, name).toString()
+            } else {
+                // A local/private copy has no SAF document behind it, so a stale
+                // "import a private copy" prompt must not survive this load.
+                lastDirectUri = null
             }
+            copyFallbackAvailable = false
             settings.lastDocumentName = name
             settings.lastModelPath = source
             modelLoadSuccessVersion += 1
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             if (!engine.isLoaded) {
+                // Nothing owns a descriptor after a failed load: close it before the
+                // caller decides whether it was retained.
+                closeDescriptors()
                 modelInfo = null
                 modelName = null
                 activeModelPath = null
             }
             loadStatus = null
-            copyFallbackAvailable = !cancelLoad && lastDirectUri != null
+            // Offer the recovery copy only for the document that just failed.
+            copyFallbackAvailable = !cancelLoad && lastDirectUri?.toString() == source
             loadError = if (cancelLoad) null else "Model load failed for $name: ${t.message ?: t.javaClass.simpleName}"
         }
     }
 
-    private fun releaseModel() {
-        engine.unload()
+    /** Closes every retained provider descriptor. Safe to call repeatedly. */
+    private fun closeDescriptors() {
         draftFd?.close()
         draftFd = null
         sourceFd?.close()
         sourceFd = null
+    }
+
+    /**
+     * Unloads the engine and always releases the descriptors it mapped, so a
+     * failed replacement or an unload cannot leak a ParcelFileDescriptor.
+     */
+    private fun releaseModel() {
+        try {
+            engine.unload()
+        } finally {
+            closeDescriptors()
+        }
     }
 
     fun unloadModel() {
@@ -631,6 +667,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             modelInfo = null
             modelName = null
             activeModelPath = null
+            lastDirectUri = null
+            copyFallbackAvailable = false
             loadStatus = "Model unloaded — RAM freed."
         }
     }
