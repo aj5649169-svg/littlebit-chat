@@ -71,7 +71,6 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
     var models by remember { mutableStateOf<List<ModelEntry>?>(null) }
     var confirmHeavy by remember { mutableStateOf<ModelEntry?>(null) }
 
-    val available = freeMemory()
     var category by remember { mutableStateOf("All") }
     var fitsOnly by remember { mutableStateOf(false) }
     val total = remember(context) {
@@ -79,7 +78,9 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
             (context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getMemoryInfo(it)
         }.totalMem
     }
-    fun fit(entry: ModelEntry) = catalogFit(entry.sizeGB, total, available, entry.minRamGb, entry.recommendedRamGb)
+    // Classify against total RAM: availMem fluctuates with unrelated apps and
+    // used to hide 3.5 GB 2-bit 8B models on 12 GB phones.
+    fun fit(entry: ModelEntry) = catalogFit(entry.sizeGB, total, entry.minRamGb, entry.recommendedRamGb)
     LaunchedEffect(Unit) {
         models = withContext(Dispatchers.IO) { ModelsCatalog.load(context) }
         vm.refreshLocalModels()
@@ -131,6 +132,16 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 .padding(horizontal = 14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            item(key = "hub-subtitle") {
+                Text(
+                    "Load a GGUF straight from the document picker — Direct loading uses Android's " +
+                        "zero-copy file descriptor, so nothing is duplicated on disk. Only providers " +
+                        "that cannot serve a seekable file ask for a one-time Private copy. " +
+                        "Image models are verified Hugging Face links for the bundled stable-diffusion.cpp engine.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             item(key = "my-local-header") {
                 Column {
                     Text("My Local Models", style = MaterialTheme.typography.titleMedium)
@@ -244,10 +255,14 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
                                 color = MaterialTheme.colorScheme.onErrorContainer,
                                 modifier = Modifier.padding(top = 4.dp),
                             )
-                            TextButton(
-                                onClick = vm::dismissLoadError,
-                                modifier = Modifier.align(Alignment.End),
-                            ) { Text("Dismiss") }
+                            Row(modifier = Modifier.align(Alignment.End)) {
+                                if (vm.copyFallbackAvailable) {
+                                    TextButton(enabled = !vm.busy, onClick = vm::importPrivateCopy) {
+                                        Text("Import private copy instead")
+                                    }
+                                }
+                                TextButton(onClick = vm::dismissLoadError) { Text("Dismiss") }
+                            }
                         }
                     }
                 }
@@ -276,7 +291,9 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     }
                 }
                 for (tier in ModelsCatalog.TIER_ORDER) {
-                    val group = catalog.filter { it.tier == tier && (category == "All" || category == tier) && (!fitsOnly || fit(it) == "Great fit") }
+                    val group = catalog.filter {
+                        it.tier == tier && (category == "All" || category == tier) && (!fitsOnly || fitsPhone(fit(it)))
+                    }
                     if (group.isEmpty()) continue
                     item(key = "tier-$tier") {
                         Column {
@@ -286,7 +303,11 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
                                 style = MaterialTheme.typography.titleMedium,
                             )
                             Text(
-                                if (tier == "8B spotlight") "2-bit models reduce storage and memory use. Start at 2K context on 6–8 GB phones." else group.first().tierLabel + " models",
+                                when (tier) {
+                                    "8B spotlight" -> "2-bit models reduce storage and memory use. Start at 2K context on 6–8 GB phones."
+                                    "Image" -> "Image Studio models. SD 1.5 Inpainting and SD-Turbo run through stable-diffusion.cpp; Qwen Image 2.1 Turbo is experimental 2-bit."
+                                    else -> group.first().tierLabel + " models"
+                                },
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -428,6 +449,14 @@ private fun ModelCard(entry: ModelEntry, fit: String, onDownload: () -> Unit) {
                 BadgeChip(
                     text = "Experimental",
                     color = ExperimentalColor,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+            entry.ramWarning?.let { warning ->
+                Text(
+                    warning,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp),
                 )
             }

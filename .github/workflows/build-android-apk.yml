@@ -2,6 +2,14 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'android-app/**'
+      - 'third_party/**'
+      - 'patches/**'
+      - 'scripts/apply-patches.sh'
+      - '.github/workflows/build-android-apk.yml'
   push:
     tags: ['v*']
     branches: [main]
@@ -18,7 +26,9 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     env:
-      NDK_VERSION: "26.1.10909125"
+      # NDK r28+ links arm64-v8a shared libraries with 16 KiB ELF alignment by
+      # default, which Android 15/16 16 KiB-page devices require.
+      NDK_VERSION: "28.2.13676358"
       GRADLE_SHA256: "5b9c5eb3f9fc2c94abaea57d90bd78747ca117ddbbf96c859d3741181a12bf2a"
       GRADLE_VERSION: "8.10"
       VULKAN_SDK_VERSION: "1.4.363.0"
@@ -99,14 +109,76 @@ jobs:
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
         run: |
+          set -o pipefail
           gradle wrapper --gradle-version "${GRADLE_VERSION}" --distribution-type bin --gradle-distribution-sha256-sum "$GRADLE_SHA256"
-          ./gradlew --no-daemon --stacktrace :app:assembleRelease
+          ./gradlew --no-daemon --stacktrace :app:assembleRelease 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+
+      - name: Summarize Gradle failure
+        if: failure()
+        run: |
+          log="$RUNNER_TEMP/gradle.log"
+          [[ -f "$log" ]] || exit 0
+          python3 - "$log" <<'PY'
+          import sys, urllib.parse
+          lines = open(sys.argv[1], errors="replace").read().splitlines()
+          marks = [i for i, l in enumerate(lines) if "FAILURE:" in l]
+          start = max(0, marks[-1] - 70) if marks else max(0, len(lines) - 120)
+          chunk = "\n".join(l.rstrip() for l in lines[start:start + 120])[:6000]
+          print("::error title=Gradle failure::" + urllib.parse.quote(chunk, safe=" ,.:;-_()[]{}<>='\"|&%#@!?*+$`/"))
+          PY
+
+      - name: Verify offline and standard release APKs (16 KiB ELF pages)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: |
+          set -euo pipefail
+          build_tools="$ANDROID_HOME/build-tools/35.0.0"
+          readelf="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          test -x "$readelf"
           mkdir -p "$RUNNER_TEMP/apks"
           for edition in offline standard; do
-            apk="app/build/outputs/apk/$edition/release/app-$edition-release.apk"
-            "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$apk"
+            apk="android-app/app/build/outputs/apk/$edition/release/app-$edition-release.apk"
+            echo "::group::Verifying $edition release APK"
+            test -f "$apk"
+            unzip -t "$apk" > /dev/null
+            echo "zipalign: $(basename "$apk")"
+            "$build_tools/zipalign" -c -P 16 -v 4 "$apk"
+            "$build_tools/apksigner" verify --verbose "$apk"
+            badging="$RUNNER_TEMP/apks/$edition-badging.txt"
+            "$build_tools/aapt2" dump badging "$apk" > "$badging"
+            grep -E "^(package|native-code):" "$badging"
+            grep -q "native-code: 'arm64-v8a'" "$badging"
             unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libsd_jni.so'
+            unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libllama_jni.so'
+            rm -rf "$RUNNER_TEMP/apks/$edition-libs"
+            unzip -q "$apk" 'lib/arm64-v8a/*.so' -d "$RUNNER_TEMP/apks/$edition-libs"
+            mapfile -t libs < <(find "$RUNNER_TEMP/apks/$edition-libs" -name '*.so' -print | sort)
+            test "${#libs[@]}" -gt 0
+            for lib in "${libs[@]}"; do
+              name=$(basename "$lib")
+              # Read the program headers into a file first: `readelf | grep -q`
+              # would let grep exit early and SIGPIPE the reader under pipefail.
+              headers="$RUNNER_TEMP/apks/$edition-$name.headers"
+              "$readelf" -lW "$lib" > "$headers"
+              grep -qE '(^|[[:space:]])LOAD[[:space:]]' "$headers" || {
+                echo "::error::$edition $name has no ELF LOAD segments"
+                exit 1
+              }
+              mapfile -t aligns < <(awk '$1 == "LOAD" { print $NF }' "$headers" | sort -u)
+              test "${#aligns[@]}" -gt 0 || {
+                echo "::error::$edition $name has no ELF LOAD segments"
+                exit 1
+              }
+              for align in "${aligns[@]}"; do
+                echo "LOAD alignment $name: $align"
+                (( align >= 16384 )) || {
+                  echo "::error::$edition $name LOAD alignment $align is below 16 KiB"
+                  exit 1
+                }
+              done
+            done
             cp "$apk" "$RUNNER_TEMP/apks/littlebit-chat-$edition-arm64.apk"
+            echo "::endgroup::"
           done
 
       - name: Upload APK artifact
@@ -139,6 +211,7 @@ jobs:
           name: LittleBit Chat ${{ github.ref_name }}
           body: |
             Choose Offline for zero network permission, or Standard for optional per-message web search.
+            Both editions ship 16 KiB ELF-aligned arm64 libraries (NDK r28c) for Android 15-16 devices.
             Includes Image Studio, direct GGUF loading, RAM estimates, backend comparison, chat forks, and Android text actions.
             Download the APK below to sideload. The matching .sha256 file verifies the download.
           files: |

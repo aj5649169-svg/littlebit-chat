@@ -65,7 +65,8 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
     val crashFile = remember { File(context.filesDir, "last_crash.txt") }
     var crashLog by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
-        crashLog = runCatching { crashFile.takeIf { it.isFile }?.readText() }.getOrNull()
+        crashLog = runCatching { crashFile.takeIf { it.isFile }?.readText() }
+            .getOrNull()?.let(com.littlebit.chat.data.CrashLog::normalize)
     }
 
     var lastStage by remember { mutableStateOf("") }
@@ -371,11 +372,11 @@ private fun RamBanner(total: Long, avail: Long) {
                 Text(
                     when {
                         total >= 12L * 1024 * 1024 * 1024 ->
-                            "All tiers are safe on this device, including Heavyweight 12B–14B models."
+                            "Compact, 8B spotlight and Large 2-bit tiers are all safe on this device."
                         total >= 8L * 1024 * 1024 * 1024 ->
-                            "Ultra-Light, Balanced and High Quality (8B) tiers are safe. Avoid Heavyweight models."
+                            "Compact and 8B spotlight tiers fit. Large 2-bit models fit with a 2K context."
                         else ->
-                            "Stick to Ultra-Light (0.6B–1.7B) models — and close background apps before loading."
+                            "Stick to Compact models (0.6B–3B) — and close background apps before loading."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
