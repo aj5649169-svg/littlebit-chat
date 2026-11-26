@@ -45,6 +45,6 @@ class ImageStagingTest {
     @Test fun byteFormattingIsReadable() {
         assertEquals("10 B", ImageModelStaging.formatBytes(10))
         assertEquals("2 KB", ImageModelStaging.formatBytes(2_000))
-        assertEquals("1.5 GB", ImageModelStaging.formatBytes(1_500_000_000))
+        assertEquals("1.50 GB", ImageModelStaging.formatBytes(1_500_000_000))
     }
 }

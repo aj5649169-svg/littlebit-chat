@@ -13,7 +13,7 @@ class ThinkBlocksTest {
 
         val short = ThinkBlocks.split("before " + ThinkBlocks.SHORT_OPEN + " plan" + ThinkBlocks.SHORT_CLOSE + " after")
         assertEquals("plan", short.think)
-        assertEquals("before  after", short.answer)
+        assertEquals("before after", short.answer)
     }
 
     @Test fun closingTagSplitAcrossStreamingChunksNeverLeaks() {

@@ -63,11 +63,25 @@ object ThinkBlocks {
         val contentStart = openIndex + openTag.length
         val close = raw.indexOf(closeTag, contentStart)
         return if (close >= 0) {
-            val think = raw.substring(contentStart, close)
-            Split(think.ifBlank { null }, answer + raw.substring(close + closeTag.length))
+            val think = raw.substring(contentStart, close).trim()
+            Split(think.ifBlank { null }, joinAroundTag(answer, raw.substring(close + closeTag.length)))
         } else {
-            Split(raw.substring(contentStart).ifBlank { null }, answer)
+            Split(raw.substring(contentStart).trim().ifBlank { null }, answer)
         }
+    }
+
+    /**
+     * Text before an opening tag and after its closing tag is one answer, so a
+     * single space is kept at the seam instead of doubling it up. Everything
+     * inside each side is left byte-for-byte as the model produced it.
+     */
+    private fun joinAroundTag(before: String, after: String): String {
+        if (before.isEmpty() || after.isEmpty()) return before + after
+        val left = before.trimEnd()
+        val right = after.trimStart()
+        if (left.isEmpty()) return right
+        if (right.isEmpty()) return left
+        return "$left $right"
     }
 
     /** Qwen3 Fast mode: suppress chain-of-thought by appending `/no_think`. */
