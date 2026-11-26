@@ -71,13 +71,8 @@ object ModelFiles {
                 }
             }
 
-            if (destination.exists() && !destination.delete()) {
-                throw IOException("Could not replace the existing " + destination.name + " file.")
-            }
-            if (!temporary.renameTo(destination)) {
-                temporary.copyTo(destination, overwrite = true)
-                temporary.delete()
-            }
+            java.nio.file.Files.move(temporary.toPath(), destination.toPath(),
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
             return destination
         } catch (t: Throwable) {
             temporary.delete()

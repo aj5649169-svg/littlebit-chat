@@ -89,9 +89,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val chat by lazy { androidx.lifecycle.ViewModelProvider(this)[ChatViewModel::class.java] }
+    override fun onStart() { super.onStart(); chat.foregrounded() }
+    override fun onStop() { if (!isChangingConfigurations) chat.backgrounded(); super.onStop() }
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        chat.receiveText(intent)
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installCrashLogHandler()
+        if (savedInstanceState == null) chat.receiveText(intent)
         val permission = android.Manifest.permission.POST_NOTIFICATIONS
         val prefs = getSharedPreferences("notifications", MODE_PRIVATE)
         if (android.os.Build.VERSION.SDK_INT >= 33 && !prefs.getBoolean("asked", false) &&
@@ -101,6 +109,11 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             val vm: ChatViewModel = viewModel()
+            androidx.compose.runtime.DisposableEffect(vm.settings.keepAwake, vm.isGenerating) {
+                val flag = android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                if (vm.settings.keepAwake && vm.isGenerating) window.addFlags(flag)
+                onDispose { window.clearFlags(flag) }
+            }
             LittleBitTheme(vm.settings) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     RootScaffold(vm)
@@ -110,7 +123,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class AppScreen { CHAT, MODEL_HUB, PLUGINS, SETTINGS }
+private enum class AppScreen { CHAT, MODEL_HUB, PLUGINS, SETTINGS, IMAGE_STUDIO }
 
 @Composable
 private fun RootScaffold(vm: ChatViewModel = viewModel()) {
@@ -122,7 +135,7 @@ private fun RootScaffold(vm: ChatViewModel = viewModel()) {
         keyboardController?.hide()
         focusManager.clearFocus()
     }
-    var screen by remember { mutableStateOf(AppScreen.CHAT) }
+    var screen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(AppScreen.CHAT) }
 
     // A successful native model load always returns the user to the shared Chat screen.
     LaunchedEffect(vm.modelLoadSuccessVersion) {
@@ -131,9 +144,25 @@ private fun RootScaffold(vm: ChatViewModel = viewModel()) {
         }
     }
 
+    com.littlebit.chat.ui.ModelApproval(vm)
+    vm.sharedText?.let { shared ->
+        androidx.compose.material3.AlertDialog(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            onDismissRequest = { vm.dismissShared() }, title = { Text("Ask LittleBit") },
+            text = { Column { Text(shared.take(180), maxLines = 3, overflow = TextOverflow.Ellipsis)
+                for (task in listOf("Summarize", "Explain", "Fix grammar", "Send as-is")) {
+                    androidx.compose.material3.TextButton(enabled = !vm.busy, onClick = {
+                        screen = AppScreen.CHAT
+                        vm.onInputChange(if (task == "Send as-is") shared else "$task:\n$shared")
+                        vm.dismissShared()
+                    }) { Text(task) }
+                }
+            } }, confirmButton = {}, dismissButton = { androidx.compose.material3.TextButton(onClick = vm::dismissShared) { Text("Cancel") } })
+    }
     val closeDrawer: () -> Unit = { scope.launch { drawerState.close() } }
 
-    BackHandler(enabled = drawerState.isOpen) { closeDrawer() }
+    BackHandler(enabled = drawerState.isOpen || screen != AppScreen.CHAT) {
+        if (drawerState.isOpen) closeDrawer() else { hideIme(); screen = AppScreen.CHAT }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -157,6 +186,7 @@ private fun RootScaffold(vm: ChatViewModel = viewModel()) {
                         screen = AppScreen.MODEL_HUB
                         closeDrawer()
                     },
+                    onStudio = { hideIme(); screen = AppScreen.IMAGE_STUDIO; closeDrawer() },
                     onOpenPlugins = {
                         hideIme()
                         screen = AppScreen.PLUGINS
@@ -180,6 +210,7 @@ private fun RootScaffold(vm: ChatViewModel = viewModel()) {
             )
             AppScreen.MODEL_HUB -> ModelHubScreen(vm = vm, onBack = { hideIme(); screen = AppScreen.CHAT })
             AppScreen.PLUGINS -> PluginsScreen(vm, onBack = { hideIme(); screen = AppScreen.CHAT })
+            AppScreen.IMAGE_STUDIO -> com.littlebit.chat.studio.ImageStudio(vm) { screen = AppScreen.CHAT }
             AppScreen.SETTINGS -> SettingsScreen(vm = vm, onBack = { hideIme(); screen = AppScreen.CHAT })
         }
     }
@@ -192,6 +223,7 @@ private fun DrawerContent(
     onOpenChat: (String) -> Unit,
 
     onOpenModelHub: () -> Unit,
+    onStudio: () -> Unit,
     onOpenPlugins: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -279,8 +311,9 @@ private fun DrawerContent(
             onClick = onOpenModelHub,
             icon = { Icon(Icons.Default.FolderOpen, contentDescription = null) },
         )
+        NavigationDrawerItem(label = { Text("Image Studio") }, selected = false, onClick = onStudio)
         NavigationDrawerItem(
-            label = { Text("Plugins & Connectors") },
+            label = { Text("Plugins & Tools") },
             selected = false,
             onClick = onOpenPlugins,
             icon = { Icon(Icons.Default.Edit, contentDescription = null) },

@@ -16,13 +16,15 @@ data class ModelEntry(
     val ramWarning: String?,
     val experimental: Boolean,
     val recommended: Boolean,
+    val minRamGb: Int,
+    val recommendedRamGb: Int,
 )
 
 /** Catalog parsed from assets/models.json (edit the JSON to change the hub). */
 object ModelsCatalog {
 
     /** Display order for the Model Hub tiers. */
-    val TIER_ORDER = listOf("ultra-light", "balanced", "high", "heavyweight", "littlebit")
+    val TIER_ORDER = listOf("8B spotlight", "Compact", "Large 2-bit", "Research", "Image models")
 
     fun load(context: Context): List<ModelEntry> {
         val text = context.assets.open("models.json").bufferedReader().use { it.readText() }
@@ -47,6 +49,7 @@ object ModelsCatalog {
                     ramWarning = if (o.has("ramWarning")) o.getString("ramWarning") else null,
                     experimental = o.optBoolean("experimental", false),
                     recommended = o.optBoolean("recommended", false),
+                    minRamGb = o.getInt("minRamGb"), recommendedRamGb = o.getInt("recommendedRamGb"),
                 ),
             )
         }

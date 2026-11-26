@@ -28,6 +28,17 @@ class InferenceForegroundService : Service() {
             }
         }
 
+        private var lastUpdate = 0L
+        @Synchronized fun speed(context: Context, tps: Double) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (operation == null || now - lastUpdate < 2000) return
+            lastUpdate = now
+            val manager = context.getSystemService(NotificationManager::class.java) ?: return
+            val existing = manager.activeNotifications.firstOrNull { it.id == ID } ?: return
+            runCatching { manager.notify(ID, Notification.Builder.recoverBuilder(context, existing.notification)
+                .setContentText("Generating · %.1f t/s".format(tps)).build()) }
+        }
+
         @Synchronized fun finish(context: Context) {
             operation = null
             context.stopService(Intent(context, InferenceForegroundService::class.java))

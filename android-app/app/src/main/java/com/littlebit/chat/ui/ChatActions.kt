@@ -1,5 +1,6 @@
 package com.littlebit.chat.ui
 
+import androidx.compose.foundation.border
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -96,7 +97,8 @@ fun HistoryMenu(vm: ChatViewModel, session: ChatSession) {
             }
         }
     }
-    if (action.isNotEmpty()) AlertDialog(onDismissRequest = { action = "" },
+    if (action.isNotEmpty()) AlertDialog(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 4.dp, modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, androidx.compose.foundation.shape.RoundedCornerShape(28.dp)), onDismissRequest = { action = "" },
         title = { Text(if (action == "Rename") "Rename chat" else "Delete this chat?") },
         text = { if (action == "Rename") OutlinedTextField(name, { name = it }, singleLine = true) else Text(session.title) },
         confirmButton = { TextButton(onClick = {
@@ -115,7 +117,8 @@ fun MessageActions(vm: ChatViewModel, index: Int, close: () -> Unit) {
     var editing by remember { mutableStateOf(false) }
     var content by remember { mutableStateOf(message.content) }
     if (editing) {
-        AlertDialog(onDismissRequest = close, title = { Text("Edit & resend") },
+        AlertDialog(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 4.dp, modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, androidx.compose.foundation.shape.RoundedCornerShape(28.dp)), onDismissRequest = close, title = { Text("Edit & resend") },
             text = { OutlinedTextField(content, { content = it }, maxLines = 8) },
             confirmButton = { TextButton(enabled = content.isNotBlank(), onClick = { close(); vm.resend(index, content) }) { Text("Resend") } },
             dismissButton = { TextButton(onClick = close) { Text("Cancel") } })
@@ -124,6 +127,7 @@ fun MessageActions(vm: ChatViewModel, index: Int, close: () -> Unit) {
     ModalBottomSheet(onDismissRequest = close) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             TextButton(onClick = { haptic(); clipboard.setText(AnnotatedString(message.content)); close() }) { Text("Copy full message") }
+            TextButton(enabled = !vm.busy, onClick = { close(); vm.fork(index) }) { Text("Fork from here") }
             if (message.role == "user") {
                 TextButton(enabled = vm.isLoaded && !vm.busy, onClick = { editing = true }) { Text("Edit & resend") }
             } else {

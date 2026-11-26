@@ -15,3 +15,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "LittleBitChat"
 include(":app")
+
+include(":image-runtime")

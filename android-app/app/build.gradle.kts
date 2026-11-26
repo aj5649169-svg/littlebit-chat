@@ -1,3 +1,6 @@
+import com.android.build.api.artifact.SingleArtifact
+import javax.xml.parsers.DocumentBuilderFactory
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -26,12 +29,18 @@ android {
         }
     }
 
+    flavorDimensions += "network"
+    productFlavors {
+        create("offline") { dimension = "network"; buildConfigField("boolean", "WEB_SEARCH", "false") }
+        create("standard") { dimension = "network"; applicationIdSuffix = ".standard"; buildConfigField("boolean", "WEB_SEARCH", "true") }
+    }
+
     defaultConfig {
         applicationId = "com.littlebit.chat"
         minSdk = 28          // matches -DANDROID_PLATFORM=android-28 in scripts/build-android.sh
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.1.3"
+        versionCode = 9
+        versionName = "1.2.0"
 
         ndk {
             // Native engine is arm64-only: KleidiAI kernels + LittleBit path are built for arm64-v8a.
@@ -85,6 +94,7 @@ android {
     }
 
     buildFeatures {
+        buildConfig = true
         compose = true
     }
 
@@ -97,6 +107,7 @@ android {
         jniLibs {
             // Extract native libs on install: faster System.loadLibrary for the multi-MB engine.
             useLegacyPackaging = true
+            pickFirsts += "**/libc++_shared.so"
         }
     }
 }
@@ -110,15 +121,17 @@ val verifyDistributionSigning by tasks.registering {
         check(file(System.getenv("ANDROID_RELEASE_STORE_FILE")).isFile) { "Distribution keystore file is missing" }
     }
 }
-tasks.matching { it.name == "preReleaseBuild" }.configureEach { dependsOn(verifyDistributionSigning) }
+tasks.matching { it.name in listOf("preOfflineReleaseBuild", "preStandardReleaseBuild") }.configureEach { dependsOn(verifyDistributionSigning) }
 
 // The signed APK workflow invokes assembleRelease. Run the JVM regression suite
 // on that entry point so a failed test cannot produce a distribution artifact.
-tasks.matching { it.name == "assembleRelease" }.configureEach { dependsOn("testDebugUnitTest") }
+tasks.matching { it.name.endsWith("Release") && it.name.startsWith("assemble") }.configureEach { dependsOn("testOfflineDebugUnitTest", "testStandardDebugUnitTest") }
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.mockito:mockito-core:5.14.2")
+    implementation(project(":image-runtime"))
+    add("standardImplementation", "org.jsoup:jsoup:1.18.3")
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
@@ -127,4 +140,26 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.core:core-ktx:1.15.0")
+}
+
+androidComponents.onVariants(androidComponents.selector().withBuildType("release").withFlavor("network" to "offline")) { variant ->
+    val manifest = variant.artifacts.get(SingleArtifact.MERGED_MANIFEST)
+    val offlineCheck = tasks.register("verifyOfflineReleaseManifest") {
+        inputs.file(manifest)
+        doLast {
+            val document = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+                .newDocumentBuilder().parse(manifest.get().asFile)
+            val nodes = document.getElementsByTagName("*")
+            for (i in 0 until nodes.length) {
+                val node = nodes.item(i)
+                if (node.nodeName.startsWith("uses-permission")) {
+                    val name = node.attributes.getNamedItemNS("http://schemas.android.com/apk/res/android", "name")?.nodeValue
+                    check(name !in setOf("android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE")) {
+                        "Forbidden network permission in merged release manifest: $name"
+                    }
+                }
+            }
+        }
+    }
+    tasks.matching { it.name.endsWith("Release") && it.name.startsWith("assemble") }.configureEach { dependsOn(offlineCheck) }
 }

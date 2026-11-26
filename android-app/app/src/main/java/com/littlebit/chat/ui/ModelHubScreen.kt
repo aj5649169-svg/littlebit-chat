@@ -1,5 +1,9 @@
 package com.littlebit.chat.ui
 
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.FilterChip
+import androidx.compose.foundation.border
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
@@ -67,6 +71,15 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
     var models by remember { mutableStateOf<List<ModelEntry>?>(null) }
     var confirmHeavy by remember { mutableStateOf<ModelEntry?>(null) }
 
+    val available = freeMemory()
+    var category by remember { mutableStateOf("All") }
+    var fitsOnly by remember { mutableStateOf(false) }
+    val total = remember(context) {
+        android.app.ActivityManager.MemoryInfo().also {
+            (context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getMemoryInfo(it)
+        }.totalMem
+    }
+    fun fit(entry: ModelEntry) = catalogFit(entry.sizeGB, total, available, entry.minRamGb, entry.recommendedRamGb)
     LaunchedEffect(Unit) {
         models = withContext(Dispatchers.IO) { ModelsCatalog.load(context) }
         vm.refreshLocalModels()
@@ -74,7 +87,7 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
 
     val pickModel = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
-    ) { uri -> uri?.let(vm::loadModelFromUri) }
+    ) { uri -> uri?.let(vm::pickModel) }
 
     val pickDraft = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.selectDraft(uri)
@@ -135,6 +148,7 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 items = vm.localModels,
                 key = { it.absolutePath },
             ) { file ->
+                HeaderSummary(vm, file.absolutePath)
                 LocalModelCard(
                     file = file,
                     enabled = vm.loadProgress < 0f,
@@ -147,10 +161,11 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 Card {
                     Column(Modifier.fillMaxWidth().padding(14.dp)) {
                         Text(modelTitle(name), style = MaterialTheme.typography.titleMedium)
-                        Text("Linked document", style = MaterialTheme.typography.labelMedium)
+                        HeaderSummary(vm, uri)
+                        Text("Direct · 0 B copied", style = MaterialTheme.typography.labelMedium)
                         Row {
                             TextButton(enabled = !vm.busy, onClick = { vm.loadModelFromUri(Uri.parse(uri)) }) { Text("Load") }
-                            TextButton(enabled = !vm.busy, onClick = { vm.forgetDocument(uri) }) { Text("Forget link") }
+                            TextButton(enabled = !vm.busy, onClick = { vm.forgetDocument(uri) }) { Text("Unlink") }
                         }
                     }
                 }
@@ -252,8 +267,16 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     )
                 }
             } else {
+                item(key = "filters") {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(selected = fitsOnly, onClick = { fitsOnly = !fitsOnly }, label = { Text("Fits my phone") })
+                        for (name in listOf("All") + ModelsCatalog.TIER_ORDER.filter { t -> catalog.any { it.tier == t } }) {
+                            FilterChip(selected = category == name, onClick = { category = name }, label = { Text(name) })
+                        }
+                    }
+                }
                 for (tier in ModelsCatalog.TIER_ORDER) {
-                    val group = catalog.filter { it.tier == tier }
+                    val group = catalog.filter { it.tier == tier && (category == "All" || category == tier) && (!fitsOnly || fit(it) == "Great fit") }
                     if (group.isEmpty()) continue
                     item(key = "tier-$tier") {
                         Column {
@@ -263,7 +286,7 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
                                 style = MaterialTheme.typography.titleMedium,
                             )
                             Text(
-                                group.first().ramNote,
+                                if (tier == "8B spotlight") "2-bit models reduce storage and memory use. Start at 2K context on 6–8 GB phones." else group.first().tierLabel + " models",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -272,9 +295,9 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     for (entry in group) {
                         item(key = entry.id) {
                             ModelCard(
-                                entry = entry,
+                                entry = entry, fit = fit(entry),
                                 onDownload = {
-                                    if (entry.ramWarning == "heavy") {
+                                    if (fit(entry) == "May OOM") {
                                         confirmHeavy = entry
                                     } else {
                                         openInChrome(entry.url)
@@ -290,9 +313,10 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit) {
     }
 
     confirmHeavy?.let { entry ->
-        AlertDialog(
+        AlertDialog(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 4.dp, modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, androidx.compose.foundation.shape.RoundedCornerShape(28.dp)),
             onDismissRequest = { confirmHeavy = null },
-            title = { Text("12 GB+ RAM required") },
+            title = { Text("Model may exceed available RAM") },
             text = {
                 Text(
                     "${entry.name} (${"%.1f".format(entry.sizeGB)} GB) is a heavyweight model. " +
@@ -328,7 +352,7 @@ private fun LocalModelCard(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                "%.2f GB".format(file.length() / 1e9),
+                "Private copy · %.2f GB".format(file.length() / 1e9),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 3.dp),
@@ -378,7 +402,7 @@ private fun LoadedModelCard(vm: ChatViewModel) {
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun ModelCard(entry: ModelEntry, onDownload: () -> Unit) {
+private fun ModelCard(entry: ModelEntry, fit: String, onDownload: () -> Unit) {
     Card(border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), shape = RoundedCornerShape(18.dp)) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -399,13 +423,7 @@ private fun ModelCard(entry: ModelEntry, onDownload: () -> Unit) {
                 )
 
             }
-            if (entry.ramWarning == "heavy") {
-                BadgeChip(
-                    text = "12 GB+ RAM Required",
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
-            }
+            FitLabel(fit)
             if (entry.experimental) {
                 BadgeChip(
                     text = "Experimental",

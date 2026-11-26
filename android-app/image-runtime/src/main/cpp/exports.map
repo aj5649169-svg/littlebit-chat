@@ -1,0 +1,1 @@
+{ global: Java_com_littlebit_chat_studio_SdNative_*; local: *; };

@@ -8,3 +8,5 @@
 -keepnames class com.littlebit.chat.data.ModelEntry
 -keepnames class com.littlebit.chat.data.ChatMessage
 -keepnames class com.littlebit.chat.data.ChatSession
+
+-keep class com.littlebit.chat.studio.SdNative { *; }

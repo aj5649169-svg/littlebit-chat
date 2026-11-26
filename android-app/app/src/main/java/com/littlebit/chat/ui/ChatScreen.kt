@@ -33,6 +33,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
@@ -154,10 +155,10 @@ fun ChatScreen(
             CenterAlignedTopAppBar(
                 title = {
                     ModelSelectorPill(
-                        modelName = vm.modelName,
+                        modelName = vm.modelName ?: vm.lastModelName?.let { "Reload " + modelTitle(it) },
                         loaded = vm.isLoaded,
                         status = when { vm.isPrefilling && vm.promptDecoded -> "Starting reply"; vm.isPrefilling -> "Reading history"; vm.streamActive -> "Writing"; vm.isLoaded -> if (vm.isUsingVulkan) "Vulkan" else "CPU"; else -> "Model Hub" },
-                        onClick = onOpenModelHub,
+                        onClick = if (!vm.isLoaded && vm.lastModelName != null) vm::reloadLastModel else onOpenModelHub,
                     )
                 },
                 navigationIcon = {
@@ -231,7 +232,13 @@ fun ChatScreen(
                     showStats = index == vm.currentMessages.size - 1 && !vm.streamActive,
                     vm = vm,
                 )
+                if (message.sources.isNotEmpty()) {
+                    var expanded by remember(message) { mutableStateOf(false) }
+                    TextButton(onClick = { expanded = !expanded }) { Text("Sources · ${message.sources.size}") }
+                    if (expanded) for (url in message.sources) MarkdownText(url)
+                }
             }
+            if (vm.searchQuery.isNotEmpty()) item { Text("Searching web… ${vm.searchQuery}", modifier = Modifier.padding(12.dp)) }
             if (vm.streamActive) {
                 item(key = "streaming") { StreamingRow(vm) }
             }
@@ -321,7 +328,7 @@ private fun StreamingRow(vm: ChatViewModel) {
     ) {
         if (vm.isPrefilling && vm.rawStream.isEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(8.dp))
                 Text(
                     if (vm.promptDecoded) "Waiting for first token…" else "Reading prompt… ${vm.promptProgress}",
@@ -528,9 +535,15 @@ private fun InputBar(vm: ChatViewModel) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    if (com.littlebit.chat.BuildConfig.WEB_SEARCH) {
+                        androidx.compose.material3.IconToggleButton(checked = vm.searchOnce, enabled = !vm.busy,
+                            onCheckedChange = { vm.searchOnce = it; vm.invalidateDraft() }) {
+                            Icon(Icons.Default.Language, contentDescription = "Search the web for this message")
+                        }
+                    }
                     Spacer(Modifier.weight(1f))
                     Spacer(Modifier.width(6.dp))
-                    val canSend = !vm.busy && ((vm.isLoaded && (vm.input.isNotBlank() || vm.attachment != null)) ||
+                    val canSend = !vm.busy && (((vm.isLoaded || vm.lastModelName != null) && (vm.input.isNotBlank() || vm.attachment != null)) ||
                         (vm.attachment == null && vm.settings.calculator && vm.input.trimStart().startsWith("/calc ")))
                     Surface(
                         enabled = vm.isGenerating || canSend,

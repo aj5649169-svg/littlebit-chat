@@ -24,9 +24,7 @@ object PluginRegistry {
     fun timeContext(): String = "Local date and time: " +
         ZonedDateTime.now().format(DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm z"))
 
-    val plugins: List<AppPlugin> = listOf(calculator, clock,
-        PluginDescriptor("web-search", "Web Search", "Look up online sources."),
-        PluginDescriptor("reminders", "Reminders", "Schedule on-device reminders."))
+    val plugins: List<AppPlugin> = listOf(calculator, clock)
 }
 
 private class Arithmetic(source: String) {

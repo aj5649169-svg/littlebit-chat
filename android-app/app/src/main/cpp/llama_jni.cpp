@@ -62,6 +62,9 @@ struct NativeEngine {
     double ttft_ms = 0, prefill_rate = 0, decode_rate = 0;
     int prompt_tokens = 0;
     double prompt_ms = 0, gen_ms = 0;
+    bool thinking = false;
+    int thought_tokens = 0;
+    llama_token close_thought = -1;
     std::string arch;
     llama_context_params params{};
     NativeEngine * draft = nullptr; // Kotlin holds both handles under the same engine mutex.
@@ -435,7 +438,7 @@ bool draftGuesses(NativeEngine * target, llama_token confirmed, int limit,
 }
 
 int runSamplingLoop(JNIEnv * env, NativeEngine * e, jobject cb,
-                    llama_sampler * chain, jint max_tokens) {
+                    llama_sampler * chain, jint max_tokens, jint budget) {
     const int n_ctx   = static_cast<int>(llama_n_ctx(e->ctx));
     const int n_vocab = static_cast<int>(llama_vocab_n_tokens(e->vocab));
 
@@ -474,7 +477,8 @@ int runSamplingLoop(JNIEnv * env, NativeEngine * e, jobject cb,
             status = -1;
             break;
         }
-        const llama_token tok = cur.data[cur.selected].id;
+        const llama_token tok = budget >= 0 && e->thinking && e->thought_tokens >= budget && e->close_thought >= 0
+            ? e->close_thought : cur.data[cur.selected].id;
         llama_sampler_accept(chain, tok);
 
         if (llama_vocab_is_eog(e->vocab, tok)) {
@@ -488,6 +492,13 @@ int runSamplingLoop(JNIEnv * env, NativeEngine * e, jobject cb,
             const char * raw = llama_vocab_get_text(e->vocab, tok);
             if (raw && !std::strcmp(raw, "<|channel>")) piece = "<think>";
             if (raw && !std::strcmp(raw, "<channel|>")) piece = "</think>";
+        }
+        if (budget >= 0 && e->close_thought >= 0) {
+            const char *raw = llama_vocab_get_text(e->vocab, tok);
+            if (tok == e->close_thought) { e->thinking = false; piece = "</think>"; }
+            else if (raw && (!std::strcmp(raw, "<think>") || !std::strcmp(raw, "<|channel>"))) {
+                e->thinking = true; e->thought_tokens = 0; piece = "<think>";
+            } else if (e->thinking) ++e->thought_tokens;
         }
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         e->decode_rate = seconds > 0 ? (n_gen + 1) / seconds : 0;
@@ -645,7 +656,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeLoadModel(
                 engine->vocab = llama_model_get_vocab(engine->model);
 
                 llama_context_params cparams = llama_context_default_params();
-                cparams.n_ctx           = std::clamp(n_ctx > 0 ? n_ctx : 2048, 128, 8192);
+                cparams.n_ctx           = std::clamp(n_ctx > 0 ? n_ctx : 2048, 128, 16384);
                 cparams.n_batch         = std::clamp(n_batch > 0 ? n_batch : 512, 1, std::min(512, static_cast<int>(cparams.n_ctx)));
                 cparams.n_ubatch        = std::min(cparams.n_batch, gemma4 ? 32u : (layers > 0 ? 128u : 64u));
                 cparams.op_offload = layers > 0;
@@ -848,7 +859,7 @@ extern "C" JNIEXPORT jint JNICALL
 Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
         JNIEnv * env, jobject, jlong handle, jstring jprompt,
         jdouble temp, jint top_k, jdouble top_p, jdouble min_p, jdouble repeat_penalty, jdouble dry_multiplier,
-        jint max_tokens, jlong seed, jobject jcallback) {
+        jint max_tokens, jlong seed, jint budget, jobject jcallback) {
     auto * e = reinterpret_cast<NativeEngine *>(handle);
     if (e == nullptr || e->ctx == nullptr) {
         throwIllegalState(env, "no model loaded");
@@ -871,6 +882,18 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
         // nativeContinueGenerate may finish a code point from the prior call.
         e->pending_utf8.clear();
         const std::string prompt = toStdString(env, jprompt);
+        e->thinking = false;
+        e->thought_tokens = 0;
+        e->close_thought = -1;
+        if (budget >= 0 && (e->arch.find("qwen3") == 0 || e->arch == "gemma4")) {
+            const char *close = e->arch == "gemma4" ? "<channel|>" : "</think>";
+            llama_token candidate;
+            if (llama_tokenize(e->vocab, close, std::strlen(close), &candidate, 1, false, true) == 1)
+                e->close_thought = candidate;
+            const auto last = prompt.find_last_not_of(" \r\n\t");
+            if (last != std::string::npos && last >= 6)
+                e->thinking = prompt.compare(last - 6, 7, "<think>") == 0;
+        }
         const int n_ctx   = static_cast<int>(llama_n_ctx(e->ctx));
         const int logical_batch = static_cast<int>(llama_n_batch(e->ctx));
         const int n_batch = std::min(static_cast<int>(llama_n_ubatch(e->ctx)), logical_batch);
@@ -987,7 +1010,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
         }
         int status = 0;
         if (!failed && !e->stop.load()) {
-            status = runSamplingLoop(env, e, cb, chain, max_tokens);
+            status = runSamplingLoop(env, e, cb, chain, max_tokens, budget);
         }
         if (chain != nullptr) { llama_sampler_free(chain); chain = nullptr; }
 
@@ -1007,7 +1030,7 @@ extern "C" JNIEXPORT jint JNICALL
 Java_com_littlebit_chat_engine_LlamaJni_nativeContinueGenerate(
         JNIEnv * env, jobject, jlong handle,
         jdouble temp, jint top_k, jdouble top_p, jdouble min_p, jdouble repeat_penalty, jdouble dry_multiplier,
-        jint max_tokens, jlong seed, jobject jcallback) {
+        jint max_tokens, jlong seed, jint budget, jobject jcallback) {
     auto * e = reinterpret_cast<NativeEngine *>(handle);
     if (e == nullptr || e->ctx == nullptr) {
         throwIllegalState(env, "no model loaded");
@@ -1045,7 +1068,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeContinueGenerate(
         llama_sampler * chain = buildSampler(e->vocab, n_vocab, opts);
         if (chain == nullptr) { env->DeleteGlobalRef(cb); throwIllegalState(env, "could not create sampler"); return -1; }
 
-        const int status = runSamplingLoop(env, e, cb, chain, max_tokens);
+        const int status = runSamplingLoop(env, e, cb, chain, max_tokens, budget);
         if (chain != nullptr) { llama_sampler_free(chain); chain = nullptr; }
         env->DeleteGlobalRef(cb);
 

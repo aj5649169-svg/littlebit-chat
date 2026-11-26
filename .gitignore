@@ -1,0 +1,8 @@
+*.jks
+*.keystore
+*.p12
+keystore.properties
+local.properties
+.env
+.env.*
+!.env.example

@@ -171,13 +171,13 @@ class LlamaEngine(diagnosticPath: String? = null) : LlmEngine {
                 LlamaJni.nativeContinueGenerate(
                     handle,
                     params.temperature, params.topK, params.topP, params.minP, params.repeatPenalty, params.dryMultiplier,
-                    params.maxTokens, params.seed, cb,
+                    params.maxTokens, params.seed, params.thinkingBudget, cb,
                 )
             } else {
                 LlamaJni.nativeGenerate(
                     handle, prompt,
                     params.temperature, params.topK, params.topP, params.minP, params.repeatPenalty, params.dryMultiplier,
-                    params.maxTokens, params.seed, cb,
+                    params.maxTokens, params.seed, params.thinkingBudget, cb,
                 )
             }
             val m = metrics()

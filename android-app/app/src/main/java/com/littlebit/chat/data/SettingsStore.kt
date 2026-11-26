@@ -14,8 +14,9 @@ import android.content.SharedPreferences
 class SettingsStore(context: Context) {
 
     companion object {
+        const val OFFLINE = "You run offline on this phone. You cannot search the web or check live weather or news. Use supplied information and say when current information is unavailable."
         const val DEFAULT_SYSTEM_PROMPT =
-            "You are LittleBit Chat, a helpful on-device AI assistant. Be concise and accurate."
+            "You are LittleBit Chat, a helpful on-device AI assistant. Be concise and accurate. $OFFLINE"
     }
 
     private val prefs: SharedPreferences =
@@ -40,6 +41,12 @@ class SettingsStore(context: Context) {
     private fun label(key: String, default: String) =
         preference(key, default, { k, d -> prefs.getString(k, d) ?: d }) { e, k, v -> e.putString(k, v) }
 
+    var unloadPolicy by label("background_unload", "After 1 min")
+    var keepAwake by flag("keep_awake", true)
+    var notifyGeneration by flag("notify_generation", true)
+    var thinkingBudget by label("think_budget", "Unlimited")
+    var searchProvider by label("search_provider", "DuckDuckGo")
+    var searxUrl by label("searx_url", "")
     var linkedModelNames by label("linked_model_names", "{}")
     var lastDocumentName by label("last_document_name", "")
     var captionMode by label("caption_mode", if (prefs.getBoolean("show_performance", true)) "Minimal" else "Off")
@@ -67,7 +74,7 @@ class SettingsStore(context: Context) {
     /** Context size 1024–8192. Applies on next model load. */
     var contextSize: Int
         get() = prefs.getInt("context_size", 2048)
-        set(v) { prefs.edit().putInt("context_size", v.coerceIn(1024, 8192)).apply() }
+        set(v) { prefs.edit().putInt("context_size", v.coerceIn(1024, 16384)).apply() }
 
     var temperature: Double
         get() = prefs.getFloat("temperature", 0.7f).toDouble()

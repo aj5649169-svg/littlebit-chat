@@ -16,6 +16,7 @@ data class SamplingParams(
     val repeatPenalty: Double = 1.1,
     val dryMultiplier: Double = 0.0, // 0 = disabled
     val maxTokens: Int = 1024,
+    val thinkingBudget: Int = -1,
     val seed: Long = -1,             // <0 = random
 )
 

@@ -63,6 +63,17 @@ fun PluginsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 .padding(horizontal = 14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            item { Column(Modifier.padding(12.dp)) {
+                if (com.littlebit.chat.BuildConfig.WEB_SEARCH) {
+                    Text("Web search", style = MaterialTheme.typography.titleMedium)
+                    Text("Only the query you enable in the composer is sent to the selected provider.")
+                    for (name in listOf("DuckDuckGo","SearXNG")) androidx.compose.material3.FilterChip(
+                        selected = vm.settings.searchProvider == name, onClick = { vm.settings.searchProvider = name }, label = { Text(name) })
+                    if (vm.settings.searchProvider == "SearXNG") androidx.compose.material3.OutlinedTextField(
+                        value = vm.settings.searxUrl, onValueChange = { vm.settings.searxUrl = it },
+                        singleLine = true, label = { Text("HTTPS instance URL") })
+                } else Text("Offline Edition · Zero Internet permission", style = MaterialTheme.typography.titleMedium)
+            } }
             for (plugin in PluginRegistry.plugins) {
                 item(key = plugin.id) {
                     Card(border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), shape = RoundedCornerShape(18.dp)) {

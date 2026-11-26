@@ -50,6 +50,7 @@ internal object LlamaJni {
         dryMultiplier: Double,
         maxTokens: Int,
         seed: Long,
+        thinkingBudget: Int,
         callback: LlamaEngine.TokenCallback,
     ): Int
 
@@ -68,6 +69,7 @@ internal object LlamaJni {
         dryMultiplier: Double,
         maxTokens: Int,
         seed: Long,
+        thinkingBudget: Int,
         callback: LlamaEngine.TokenCallback,
     ): Int
 

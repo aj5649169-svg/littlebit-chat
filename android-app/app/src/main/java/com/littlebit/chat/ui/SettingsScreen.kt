@@ -94,6 +94,8 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
     var vulkanEnabled by remember { mutableStateOf(settings.vulkanOffload) }
     var gpuLayers by remember { mutableFloatStateOf(settings.vulkanGpuLayers.toFloat()) }
 
+    val contexts = listOf(1024, 2048, 3072, 4096, 6144, 8192, 16384)
+    var reloadNeeded by remember(vm.modelLoadSuccessVersion) { mutableStateOf(false) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -150,16 +152,16 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 run {
                     SliderRow(
                         label = "Context Size",
-                        value = ctxSize,
-                        range = 1024f..8192f,
-                        steps = 27,
-                        display = ctxSize.roundToInt().toString(),
-                        onChange = { ctxSize = it },
-                        onChangeFinished = {
-                            settings.contextSize = (ctxSize.roundToInt() / 256) * 256
-                            ctxSize = settings.contextSize.toFloat()
-                        },
+                        value = contexts.indices.minBy { kotlin.math.abs(contexts[it] - ctxSize) }.toFloat(),
+                        range = 0f..6f, steps = 5, display = ctxSize.roundToInt().toString(),
+                        onChange = { ctxSize = contexts[it.roundToInt()].toFloat() },
+                        onChangeFinished = { settings.contextSize = ctxSize.toInt(); reloadNeeded = true },
                     )
+                    Choices("Quick context", listOf("2K","4K","8K","16K"), "${ctxSize.toInt()/1024}K") {
+                        ctxSize = it.dropLast(1).toInt() * 1024f
+                        settings.contextSize = ctxSize.toInt()
+                        reloadNeeded = true
+                    }
                 }
                     SwitchRow(
                         title = "Vulkan GPU Offload",
@@ -168,6 +170,7 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                         onCheckedChange = {
                             vulkanEnabled = it
                             settings.vulkanOffload = it
+                            reloadNeeded = true
                         },
                     )
                 if (vulkanEnabled) {
@@ -181,10 +184,15 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                                 display = gpuLayers.roundToInt().toString(),
                                 onChange = { gpuLayers = it },
                                 onChangeFinished = {
+                                    reloadNeeded = true
                                     settings.vulkanGpuLayers = gpuLayers.roundToInt()
                                     gpuLayers = settings.vulkanGpuLayers.toFloat()
                                 },
                             )
+                            Choices("Quick offload", listOf("CPU 0","Half","All 99"), when (gpuLayers.toInt()) {
+                                0 -> "CPU 0"; 50 -> "Half"; 99 -> "All 99"; else -> ""
+                            }) { gpuLayers = when(it) { "CPU 0" -> 0f; "Half" -> 50f; else -> 99f }
+                                settings.vulkanGpuLayers = gpuLayers.toInt(); reloadNeeded = true }
                             Text(
                                 "Reload model after changing GPU offload. On Mali GPUs, compare t/s against CPU KleidiAI.",
                                 style = MaterialTheme.typography.bodySmall,
@@ -194,6 +202,15 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                         }
                     }
                 }
+            } }
+            if (vm.isLoaded && reloadNeeded) item { SettingPanel("Engine settings changed") {
+                TextButton(enabled = !vm.busy, onClick = vm::reloadLastModel) { Text("Reload now") }
+            } }
+            item { SettingPanel("Background behavior") {
+                Choices("Thinking budget", listOf("Off","256","512","1024","Unlimited"), settings.thinkingBudget) { settings.thinkingBudget = it; vm.invalidateDraft() }
+                SwitchRow("Generation notification", "Show speed and Stop during replies", settings.notifyGeneration) { settings.notifyGeneration = it }
+                Choices("Auto-unload in background", listOf("Off","After 1 min","Immediately"), settings.unloadPolicy) { settings.unloadPolicy = it }
+                SwitchRow("Keep screen awake", "During generation", settings.keepAwake) { settings.keepAwake = it }
             } }
             item { SettingPanel("Appearance") {
                     Choices("Theme", listOf("System","Dark","Light","AMOLED Pure Black"), settings.theme) { settings.theme = it }
@@ -242,6 +259,11 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     TextButton(enabled = vm.isLoaded && !vm.busy, onClick = vm::benchmark) {
                         Text(if (vm.benchmarking) "Benchmark running…" else "Run Quick Benchmark")
                     }
+                    TextButton(enabled = vm.isLoaded && !vm.busy, onClick = vm::compareBackends) { Text("Auto-pick fastest backend") }
+                    vm.comparison?.let { (cpu,gpu) ->
+                        Text("CPU %.1f t/s · ".format(cpu) + if (gpu > 0) "Vulkan %.1f t/s".format(gpu) else "Vulkan unavailable")
+                        TextButton(enabled = !vm.busy, onClick = vm::applyWinner) { Text("Apply faster backend") }
+                    }
                     val rows = org.json.JSONArray(settings.benchmarkHistory)
                     for (i in 0 until rows.length()) Text(rows.getString(i), modifier = Modifier.padding(vertical = 4.dp),
                         style = MaterialTheme.typography.bodySmall)
@@ -273,6 +295,12 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 }
             }
             if (advanced) {
+                item { TextButton(onClick = {
+                    temperature = .7f; dry = .8f; repeatPenalty = 1.18f
+                    settings.temperature = .7; settings.dryMultiplier = .8; settings.repeatPenalty = 1.18
+                    settings.batch = 512; settings.flash = true; settings.topK = 40; settings.topPercent = 90
+                    settings.minPercent = 5; settings.maxTokens = 1024; reloadNeeded = true
+                }) { Text("Reset to defaults") } }
                 item(key = "temp") {
                     SliderRow(
                         label = "Temperature",
@@ -306,8 +334,8 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                         onChangeFinished = { settings.dryMultiplier = dry.toDouble() },
                     )
                 }
-                item { Choices("Prefill batch · reload model", listOf("256","512"), settings.batch.coerceAtMost(512).toString()) { settings.batch = it.toInt() } }
-                item { SwitchRow("Vulkan Flash Attention", "Try Q8 KV cache on reload. CPU uses F16.", settings.flash) { settings.flash = it } }
+                item { Choices("Prefill batch · reload model", listOf("256","512"), settings.batch.coerceAtMost(512).toString()) { settings.batch = it.toInt(); reloadNeeded = true } }
+                item { SwitchRow("Vulkan Flash Attention", "Try Q8 KV cache on reload. CPU uses F16.", settings.flash) { settings.flash = it; reloadNeeded = true } }
                 item { Choices("Top K", listOf("0","20","40","80"), settings.topK.toString()) { settings.topK = it.toInt() } }
                 item { Choices("Top P (%)", listOf("80","90","95","100"), settings.topPercent.toString()) { settings.topPercent = it.toInt() } }
                 item { Choices("Min P (%)", listOf("0","5","10"), settings.minPercent.toString()) { settings.minPercent = it.toInt() } }
@@ -374,9 +402,12 @@ private fun SliderRow(
             Text(label, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
             Text(display, style = MaterialTheme.typography.labelLarge)
         }
+        val buzz = hapticAction()
         Slider(
             value = value,
-            onValueChange = onChange,
+            colors = androidx.compose.material3.SliderDefaults.colors(activeTickColor = androidx.compose.ui.graphics.Color.Transparent,
+                inactiveTickColor = androidx.compose.ui.graphics.Color.Transparent),
+            onValueChange = { if (it != value) { buzz(); onChange(it) } },
             valueRange = range,
             steps = steps,
             onValueChangeFinished = onChangeFinished,
