@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -247,7 +249,7 @@ private fun AssistantEditor(assistant: Assistant, onDismiss: () -> Unit, onSave:
         onDismissRequest = onDismiss,
         title = { Text(if (assistant.name.isBlank()) "New assistant" else "Edit assistant") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(prompt, { prompt = it }, label = { Text("System prompt") }, minLines = 3, modifier = Modifier.fillMaxWidth())
                 Text("Reasoning mode", style = MaterialTheme.typography.labelLarge)
@@ -323,7 +325,7 @@ private fun NoteEditor(
         onDismissRequest = onDismiss,
         title = { Text(if (note.text.isBlank()) "New pinned note" else "Edit pinned note") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(title, { title = it }, label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(text, { text = it }, label = { Text("Context") }, minLines = 3, modifier = Modifier.fillMaxWidth())
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
