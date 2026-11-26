@@ -1500,11 +1500,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (replaceFrom != null) while (currentMessages.size > replaceFrom) currentMessages.removeAt(currentMessages.lastIndex)
                 currentMessages.add(ChatMessage("user", text, fast = fastMode))
                 syncActiveToStore()
+                val noteLines = Notes.contextLines(notes, currentSession?.id)
+                val system = buildString {
+                    append(settings.systemPrompt.trim())
+                    if (noteLines.isNotEmpty()) {
+                        if (isNotEmpty()) append("\n\n")
+                        append(noteLines.joinToString("\n"))
+                    }
+                    if (settings.clock) {
+                        if (isNotEmpty()) append('\n')
+                        append(com.littlebit.chat.plugins.PluginRegistry.timeContext())
+                    }
+                }
                 val history = currentMessages.dropLast(1).map { it.role to ThinkBlocks.strip(it.content) }
                 val request = CloudRequest(
                     endpoint = settings.cloudEndpoint,
                     model = settings.cloudModel.trim(),
-                    messages = history + ("user" to text),
+                    messages = (if (system.isNotBlank()) listOf("system" to system) else emptyList()) + history + ("user" to text),
                     temperature = assistantTemperature ?: settings.temperature,
                     maxTokens = assistantMaxTokens ?: settings.maxTokens,
                 )

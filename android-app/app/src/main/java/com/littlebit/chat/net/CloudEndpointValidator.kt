@@ -37,7 +37,13 @@ object CloudEndpointValidator {
             (parts[0] == 192 && parts[1] == 168)
     }
 
-    fun chatCompletions(base: String): String? = normalize(base)?.let { "$it/chat/completions" }
+    fun chatCompletions(base: String): String? =
+        normalize(base)?.let { "${stripApiSuffix(it)}/chat/completions" }
 
-    fun models(base: String): String? = normalize(base)?.let { "$it/models" }
+    fun models(base: String): String? =
+        normalize(base)?.let { "${stripApiSuffix(it)}/models" }
+
+    /** Accepts a pasted full endpoint (`…/chat/completions` or `…/models`) as a base URL. */
+    private fun stripApiSuffix(url: String): String =
+        url.removeSuffix("/chat/completions").removeSuffix("/models")
 }

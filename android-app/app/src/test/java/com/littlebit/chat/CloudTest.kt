@@ -90,5 +90,14 @@ class CloudTest {
             CloudEndpointValidator.models("http://127.0.0.1:11434/v1"),
         )
         assertNull(CloudEndpointValidator.chatCompletions("http://example.com/v1"))
+        // A pasted full endpoint still resolves to the same URL.
+        assertEquals(
+            "https://api.openai.com/v1/chat/completions",
+            CloudEndpointValidator.chatCompletions("https://api.openai.com/v1/chat/completions"),
+        )
+        assertEquals(
+            "https://api.openai.com/v1/models",
+            CloudEndpointValidator.models("https://api.openai.com/v1/chat/completions"),
+        )
     }
 }
