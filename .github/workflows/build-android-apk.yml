@@ -126,8 +126,14 @@ jobs:
           lines = open(sys.argv[1], errors="replace").read().splitlines()
           marks = [i for i, l in enumerate(lines) if "FAILURE:" in l]
           start = max(0, marks[-1] - 70) if marks else max(0, len(lines) - 120)
-          chunk = "\n".join(l.rstrip() for l in lines[start:start + 120])[:6000]
-          print("::error title=Gradle failure::" + urllib.parse.quote(chunk, safe=" ,.:;-_()[]{}<>='\"|&%#@!?*+$`/"))
+          chunk = "\n".join(l.rstrip() for l in lines[start:start + 130])[:6000]
+          # A single annotation is clipped at 4 KB, which can end right before
+          # the error itself. Emit the same chunk in slices so the failing task
+          # and its message are always visible in the run summary.
+          for index, offset in enumerate(range(0, len(chunk), 1400), start=1):
+              part = chunk[offset:offset + 1400]
+              print("::error title=Gradle failure %d::" % index
+                    + urllib.parse.quote(part, safe=" ,.:;-_()[]{}<>='\"|&%#@!?*+$`/"))
           PY
 
       - name: Verify offline and standard release APKs (16 KiB ELF pages)
