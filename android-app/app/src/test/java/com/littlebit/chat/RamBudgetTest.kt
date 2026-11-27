@@ -30,19 +30,69 @@ class RamBudgetTest {
     }
 
     @Test fun sixGigabytePhoneIsDangerAtFourK() {
+        // 3.9 GB of weights + a 4K F16 KV cache is ~78 % of a 6 GB phone's total RAM.
         val budget = RamBudgetEstimator.estimate(
-            modelFileBytes = 3_600_000_000L, nCtx = 4096, useVulkan = false,
+            modelFileBytes = 3_900_000_000L, nCtx = 4096, useVulkan = false,
             totalRamBytes = gb6, availRamBytes = gb6,
         )
         assertEquals(Risk.DANGER, budget.risk)
     }
 
-    @Test fun lowFreeMemoryIsDangerEvenOnBigPhone() {
+    /**
+     * The v1.3.1 showstopper: a 12 GB phone with 5.4 GB `availMem` loading a
+     * ~5.9 GB estimate (~52 % of total) must stay SAFE. Android's page cache is
+     * reclaimable, so `availMem` alone must not block it.
+     */
+    @Test fun twelveGigabytePhoneLoadsQwen3EightBAtTwoAndFourK() {
+        for (ctx in listOf(2048, 4096)) {
+            val budget = RamBudgetEstimator.estimate(
+                modelFileBytes = 5_000_000_000L, nCtx = ctx, useVulkan = true,
+                totalRamBytes = 11_200_000_000L, availRamBytes = 5_400_000_000L,
+            )
+            assertEquals("ctx=$ctx", Risk.SAFE, budget.risk)
+        }
+    }
+
+    @Test fun sixGigabytePhoneWarnsForGemma4E2BAtFourK() {
+        val budget = RamBudgetEstimator.estimate(
+            modelFileBytes = 3_110_000_000L, nCtx = 4096, useVulkan = false,
+            totalRamBytes = 6_000_000_000L, availRamBytes = 2_500_000_000L,
+        )
+        assertTrue(budget.risk == Risk.TIGHT || budget.risk == Risk.DANGER)
+    }
+
+    @Test fun replacementModelCreditsTheOutgoingModel() {
+        val without = RamBudgetEstimator.estimate(
+            modelFileBytes = 5_000_000_000L, nCtx = 2048, useVulkan = false,
+            totalRamBytes = 8_000_000_000L, availRamBytes = 2_000_000_000L,
+        )
+        val with = RamBudgetEstimator.estimate(
+            modelFileBytes = 5_000_000_000L, nCtx = 2048, useVulkan = false,
+            totalRamBytes = 8_000_000_000L, availRamBytes = 2_000_000_000L,
+            currentlyLoadedModelBytes = 4_000_000_000L,
+        )
+        assertEquals(Risk.DANGER, without.risk)
+        assertEquals(4_000_000_000L, with.creditedBytes)
+        assertEquals(with.estimateBytes - 4_000_000_000L, with.effectiveBytes())
+        assertEquals(Risk.SAFE, with.risk)
+    }
+
+    @Test fun smallDeviceLowAvailIsTight() {
+        val budget = RamBudgetEstimator.estimate(
+            modelFileBytes = 2_500_000_000L, nCtx = 2048, useVulkan = false,
+            totalRamBytes = gb6, availRamBytes = gb,
+        )
+        assertEquals(Risk.TIGHT, budget.risk)
+    }
+
+    @Test fun bigPhoneIgnoresReclaimablePageCacheShortfall() {
+        // A small model on a 12 GB phone is never blocked just because most of
+        // the RAM is currently page cache.
         val budget = RamBudgetEstimator.estimate(
             modelFileBytes = 3L * gb, nCtx = 2048, useVulkan = false,
-            totalRamBytes = gb12, availRamBytes = 2L * gb,
+            totalRamBytes = gb12, availRamBytes = gb / 2,
         )
-        assertEquals(Risk.DANGER, budget.risk)
+        assertEquals(Risk.SAFE, budget.risk)
     }
 
     @Test fun lowMemoryFlagForcesDanger() {

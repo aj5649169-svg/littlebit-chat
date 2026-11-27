@@ -127,6 +127,7 @@ internal fun generate(
     steps: Int,
     strength: Float,
     seed: Long,
+    taesdPath: String? = null,
 ): Bitmap {
     val files = Array(4) { "" }
     for (i in 0 until minOf(4, modelPaths.size)) modelPaths[i]?.let { files[i] = it }
@@ -160,6 +161,7 @@ internal fun generate(
         files[0].contains("turbo", true) || files[1].contains("turbo", true),
         rgb,
         mask,
+        taesdPath,
     )
     val image = Bitmap.createBitmap(
         IntArray(width * height) { i ->

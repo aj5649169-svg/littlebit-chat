@@ -234,6 +234,11 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     vm.scheduleIdleUnload()
                 }
                 SwitchRow("Keep screen awake", "During generation", settings.keepAwake) { settings.keepAwake = it }
+                SwitchRow(
+                    title = "RAM safety warnings",
+                    subtitle = "Warn before a load that may swap. Off bypasses the pre-load modal entirely.",
+                    checked = settings.ramSafetyWarnings,
+                ) { settings.ramSafetyWarnings = it }
             } }
             item { SettingPanel("Chat display") {
                 SwitchRow(

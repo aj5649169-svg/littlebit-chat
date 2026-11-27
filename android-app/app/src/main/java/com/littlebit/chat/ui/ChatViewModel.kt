@@ -23,6 +23,7 @@ import com.littlebit.chat.data.DiffusionModelGuard
 import com.littlebit.chat.data.ModelFiles
 import com.littlebit.chat.data.Notes
 import com.littlebit.chat.data.RamBudgetEstimator
+import com.littlebit.chat.data.RamDialogPlan
 import com.littlebit.chat.data.NotesStore
 import com.littlebit.chat.data.SettingsStore
 import com.littlebit.chat.engine.*
@@ -128,12 +129,31 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var studioError by mutableStateOf<String?>(null)
         private set
+    /** Brief status line shown by Image Studio (RAM freed, cancelling, done). */
+    var studioNote by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * Cancels an in-flight image generation. The native render is a blocking
+     * call, so cancellation is signalled through stable-diffusion.cpp's abort
+     * flag (`SdNative.cancel()`) instead of coroutine cancellation.
+     */
+    fun cancelImage() {
+        if (!studioBusy) return
+        studioNote = "Cancelling…"
+        runCatching { com.littlebit.chat.studio.SdNative.cancel() }
+    }
+
     fun renderImage(render: () -> android.graphics.Bitmap) {
         if (busy) return
         studioBusy = true
         studioError = null
+        // stable-diffusion.cpp and llama.cpp cannot share the device's RAM on a
+        // phone, so the chat model is unloaded first. `settings.lastModelPath`
+        // is deliberately left intact for a one-tap reload when Chat reopens.
+        studioNote = if (engine.isLoaded) "Freed chat model RAM — generating…" else null
         try { com.littlebit.chat.studio.SdNative.prepare() } catch (e: LinkageError) {
-            studioBusy = false; studioError = e.message; return
+            studioBusy = false; studioNote = null; studioError = e.message; return
         }
         viewModelScope.launch(inference) {
             try {
@@ -144,11 +164,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     cacheSession = null; capacity = 0
                     studioResult = render()
                 }
-            } catch (e: Exception) { studioError = e.message }
-            finally { studioBusy = false }
+            } catch (e: Exception) {
+                // Native cancel surfaces as IllegalStateException("Cancelled").
+                studioError = e.message?.takeIf { it != "Cancelled" }
+                if (e.message == "Cancelled") studioNote = "Cancelled — RAM freed."
+            } finally {
+                studioBusy = false
+                if (studioNote?.startsWith("Freed chat model RAM") == true) studioNote = null
+            }
         }
     }
-    val busy get() = studioBusy || isGenerating || benchmarking || loadProgress >= 0f
+    // A pending RAM dialog also blocks re-entry, so a second tap cannot replace
+    // the stored pending load while the modal is open.
+    val busy get() = studioBusy || isGenerating || benchmarking || loadProgress >= 0f || ramWarning != null
     private var cacheSession: String? = null
     private var cacheSystem: String? = null
     val sortedSessions get() = sessions.sortedWith(compareByDescending<ChatSession> { it.pinned }.thenByDescending { it.updatedAt })
@@ -312,10 +340,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun ramBudget(modelBytes: Long, nCtx: Int = settings.contextSize): RamBudgetEstimator.Budget {
         val (total, avail, low) = ramInfo()
-        return RamBudgetEstimator.estimate(modelBytes, nCtx, settings.vulkanOffload, total, avail, low)
+        // A replacement load unloads the current model first, so its resident
+        // bytes count as free space for the estimate.
+        val loaded = if (engine.isLoaded) modelInfo?.sizeBytes ?: 0L else 0L
+        return RamBudgetEstimator.estimate(
+            modelBytes, nCtx, settings.vulkanOffload, total, avail, low,
+            currentlyLoadedModelBytes = loaded,
+        )
     }
 
     private fun guardRam(modelBytes: Long, name: String, proceed: () -> Unit) {
+        // Power users can turn the pre-load modal off in Settings.
+        if (!settings.ramSafetyWarnings) { proceed(); return }
         val budget = ramBudget(modelBytes)
         if (budget.risk == RamBudgetEstimator.Risk.SAFE) proceed() else {
             pendingLoad = proceed
@@ -323,17 +359,37 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Runs the pending load after a dialog action.
+     *
+     * This must never touch `loadProgress` before invoking [pendingLoad]: every
+     * load entry point starts with `if (busy) return`, and `busy` is true
+     * whenever `loadProgress >= 0f`. Setting progress here made the callback
+     * bail out immediately and left the hub at a frozen progress bar with the
+     * Load buttons permanently disabled (the v1.3.1 showstopper).
+     */
     private fun resumeLoad() {
         val proceed = pendingLoad
         pendingLoad = null
         ramWarning = null
-        loadProgress = 0f
-        proceed?.invoke() ?: run { loadProgress = -1f }
+        if (proceed == null) {
+            loadProgress = -1f
+            canCancelLoad = false
+            return
+        }
+        try {
+            proceed()
+        } catch (t: Throwable) {
+            loadProgress = -1f
+            canCancelLoad = false
+            loadStatus = null
+            loadError = "Model load failed: ${t.message ?: t.javaClass.simpleName}"
+        }
     }
 
-    /** "Load at 2K Context (Recommended)": clamps the window and enables Q8_0 KV. */
+    /** "Load at 2K/1K Context": clamps to the next lower window and enables Q8_0 KV. */
     fun loadAtSafeContext() {
-        settings.contextSize = RamBudgetEstimator.safeContext(settings.contextSize)
+        RamDialogPlan.lowerContext(settings.contextSize)?.let { settings.contextSize = it }
         settings.flash = true
         resumeLoad()
     }
@@ -344,11 +400,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         resumeLoad()
     }
 
+    /** "Load Anyway": bypasses the guard for this one load. */
     fun loadDespiteRamWarning() = resumeLoad()
 
+    /** Cancel / Back / scrim: drop the pending load and reset every loading flag. */
     fun dismissRamWarning() {
         pendingLoad = null
         ramWarning = null
+        loadProgress = -1f
+        canCancelLoad = false
+        isCopyingModel = false
+        loadStatus = null
     }
 
     // ------------------------------------------------------------- chat flows
@@ -551,7 +613,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val (rawName, size) = ModelFiles.queryDocumentMetadata(app, uri)
                 val name = rawName ?: settings.lastDocumentName
                 require(name.endsWith(".gguf", true)) { "Choose a .gguf model." }
-                if (!preview && !ramApproved) {
+                if (!preview && !ramApproved && settings.ramSafetyWarnings) {
                     val budget = ramBudget(size)
                     if (budget.risk != RamBudgetEstimator.Risk.SAFE) {
                         pendingLoad = {

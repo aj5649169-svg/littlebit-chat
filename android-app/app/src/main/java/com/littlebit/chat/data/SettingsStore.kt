@@ -61,6 +61,15 @@ class SettingsStore(context: Context) {
     /** Chat context meter under the composer. */
     var showContextBar by flag("show_context_bar", true)
 
+    /**
+     * Pre-load RAM warning modal. Default ON; power users can bypass the
+     * estimate entirely (the benchmark setup dialog stays informational).
+     */
+    var ramSafetyWarnings by flag("ram_safety_warnings", true)
+
+    /** Image Studio: use a staged taesd.safetensors for 1-3 s VAE decoding. */
+    var taesdEnabled by flag("taesd_enabled", false)
+
     /** Idle auto-unload of the loaded model: "Off", "2 min", "5 min", "10 min". */
     var idleUnload by label("idle_unload", "5 min")
     var captionMode by label("caption_mode", if (prefs.getBoolean("show_performance", true)) "Minimal" else "Off")

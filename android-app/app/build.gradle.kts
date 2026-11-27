@@ -39,7 +39,7 @@ android {
         applicationId = "com.littlebit.chat"
         minSdk = 28          // matches -DANDROID_PLATFORM=android-28 in scripts/build-android.sh
         targetSdk = 35
-        versionCode = 12
+        versionCode = 13
         versionName = "1.3.1"
 
         ndk {

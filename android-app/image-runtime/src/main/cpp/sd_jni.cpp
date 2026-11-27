@@ -49,7 +49,8 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_littlebit_chat_studio_SdNative_sta
 }
 extern "C" JNIEXPORT jbyteArray JNICALL Java_com_littlebit_chat_studio_SdNative_render(
     JNIEnv *env, jobject, jobjectArray files, jstring prompt, jstring negative, jint w, jint h,
-    jint steps, jfloat strength, jlong seed, jboolean turbo, jbyteArray photo, jbyteArray mask) {
+    jint steps, jfloat strength, jlong seed, jboolean turbo, jbyteArray photo, jbyteArray mask,
+    jstring taesdPath) {
     try {
         if (w < 64 || h < 64 || w > 1024 || h > 1024 || w%64 || h%64 || env->GetArrayLength(files)!=4)
             throw std::runtime_error("Invalid image request");
@@ -59,6 +60,8 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_com_littlebit_chat_studio_SdNative_
             paths.push_back(str(env,s)); env->DeleteLocalRef(s);
         }
         const auto text=str(env,prompt), neg=str(env,negative);
+        // Optional TAESD fast VAE (madebyollin/taesd). Empty keeps the full VAE.
+        const auto taesd=taesdPath?str(env,taesdPath):std::string();
         auto rgb=bytes(env,photo,w*h*3), gray=bytes(env,mask,w*h);
         sd_ctx_params_t c; sd_ctx_params_init(&c);
         const bool qwen=!paths[1].empty();
@@ -66,7 +69,13 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_com_littlebit_chat_studio_SdNative_
             c.diffusion_model_path=paths[0].c_str(); c.llm_path=paths[1].c_str();
             c.vae_path=paths[2].c_str(); c.llm_vision_path=paths[3].c_str();
         } else c.model_path=paths[0].c_str();
+        // Pinned include/stable-diffusion.h@2988060: enable_mmap keeps weights
+        // file-backed, diffusion_flash_attn is the low-RAM attention path, and
+        // taesd_path swaps in the 1-3 s decoder when a staged file is supplied.
+        // There is no `vae_decode_only` field at this commit: the VAE encoder is
+        // skipped automatically because init_image is only set for img2img.
         c.n_threads=4; c.enable_mmap=true; c.diffusion_flash_attn=true;
+        if(!taesd.empty()) c.taesd_path=taesd.c_str();
         c.eager_load=false; c.disable_prefetch=true; c.conditioning_cache_size=0;
         c.params_backend="disk";
         std::vector<char> devs(sd_list_devices(nullptr,0)+1);
@@ -76,6 +85,8 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_com_littlebit_chat_studio_SdNative_
         sd_img_gen_params_t g; sd_img_gen_params_init(&g);
         g.prompt=text.c_str(); g.negative_prompt=neg.c_str(); g.width=w; g.height=h;
         g.seed=seed; g.strength=strength; g.sample_params.sample_steps=steps;
+        // Tiled VAE decode: the full 512x512 decode was the `Decoding VAE...`
+        // stall on 12 GB phones; tiling caps the decoder's working set.
         g.vae_tiling_params.enabled=true;
         sd_image_t input{(uint32_t)w,(uint32_t)h,3,rgb.data()};
         if(!rgb.empty()) {

@@ -1,3 +1,5 @@
+> **Before coding:** read `.agents/skills/using-superpowers/SKILL.md` and follow it. `.agents/skills/` holds Markdown-only guidance (`obra/superpowers`, GSD, Context7, `material-design-3-ui`, `mobile-android-design`); keep it free of scripts and `.git` folders.
+
 # LittleBit Chat — permanent engineering rules
 
 These rules apply to every change in this repository. They exist because the
