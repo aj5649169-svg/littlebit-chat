@@ -182,6 +182,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
     // A pending RAM dialog also blocks re-entry, so a second tap cannot replace
     // the stored pending load while the modal is open.
+    //
+    // Declared here, above `init`, on purpose: Kotlin initializes properties in
+    // source order, so a getter read from `init` (createChat() -> `if (busy)`)
+    // would dereference this delegate before it existed and crash on launch.
+    data class RamWarning(val budget: RamBudgetEstimator.Budget, val name: String)
+
+    var ramWarning by mutableStateOf<RamWarning?>(null)
+        private set
     val busy get() = studioBusy || isGenerating || benchmarking || loadProgress >= 0f || ramWarning != null
     private var cacheSession: String? = null
     private var cacheSystem: String? = null
@@ -338,10 +346,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         return Triple(info.totalMem, info.availMem, info.lowMemory)
     }
 
-    data class RamWarning(val budget: RamBudgetEstimator.Budget, val name: String)
-
-    var ramWarning by mutableStateOf<RamWarning?>(null)
-        private set
     private var pendingLoad: (() -> Unit)? = null
 
     fun ramBudget(modelBytes: Long, nCtx: Int = settings.contextSize): RamBudgetEstimator.Budget {
