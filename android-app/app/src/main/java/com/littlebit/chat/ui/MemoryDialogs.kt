@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.littlebit.chat.data.RamBudgetEstimator
+import com.littlebit.chat.data.RamDialogPlan
 import com.littlebit.chat.engine.BenchmarkPreset
 
 /**
@@ -31,35 +33,63 @@ import com.littlebit.chat.engine.BenchmarkPreset
 fun RamGuardDialog(vm: ChatViewModel) {
     val warning = vm.ramWarning ?: return
     val budget = warning.budget
+    val plan = RamDialogPlan.build(
+        risk = budget.risk,
+        requestedCtx = vm.settings.contextSize,
+        useVulkan = vm.settings.vulkanOffload,
+        modelName = warning.name,
+    )
+    fun act(action: String) = when (action) {
+        RamDialogPlan.ANYWAY -> vm.loadDespiteRamWarning()
+        RamDialogPlan.CPU -> vm.loadOnCpu()
+        RamDialogPlan.CANCEL -> vm.dismissRamWarning()
+        else -> vm.loadAtSafeContext() // a lower-context action
+    }
+    val primary = plan.actions.firstOrNull() ?: RamDialogPlan.ANYWAY
+    val secondary = plan.actions.drop(1)
     AlertDialog(
         onDismissRequest = vm::dismissRamWarning,
         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         shape = RoundedCornerShape(28.dp),
-        title = { Text(if (budget.risk == RamBudgetEstimator.Risk.DANGER) "Not enough free RAM" else "Tight on RAM") },
+        title = { Text(plan.title) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 320.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Text(budget.summary(), style = MaterialTheme.typography.bodyMedium)
+                if (budget.creditedBytes > 0L) {
+                    Text(
+                        "Crediting ~${RamBudgetEstimator.gb(budget.creditedBytes)} from the loaded model that will be unloaded first.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
                     warning.name,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    if (budget.risk == RamBudgetEstimator.Risk.DANGER)
-                        "Loading this model at ${vm.settings.contextSize} tokens can freeze the phone. 2K context or CPU avoids most of the peak."
-                    else "The phone may start swapping. 2K context keeps the same model lighter.",
+                    plan.message,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = vm::loadAtSafeContext) { Text("Load at 2K Context (Recommended)") }
+            TextButton(onClick = { act(primary) }) { Text(primary) }
         },
         dismissButton = {
-            Row {
-                if (vm.settings.vulkanOffload) TextButton(onClick = vm::loadOnCpu) { Text("Load on CPU") }
-                TextButton(onClick = vm::loadDespiteRamWarning) { Text("Load Anyway") }
+            // CPU / Anyway / Cancel stay reachable on small screens; the text
+            // above scrolls instead of clipping the buttons.
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+            ) {
+                for (action in secondary) TextButton(onClick = { act(action) }) { Text(action) }
             }
         },
     )

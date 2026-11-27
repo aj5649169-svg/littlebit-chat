@@ -6,5 +6,6 @@ internal object SdNative {
     external fun status(): String
     external fun cancel()
     external fun render(files: Array<String>, prompt: String, negative: String, width: Int, height: Int,
-                        steps: Int, strength: Float, seed: Long, turbo: Boolean, photo: ByteArray?, mask: ByteArray?): ByteArray
+                        steps: Int, strength: Float, seed: Long, turbo: Boolean, photo: ByteArray?, mask: ByteArray?,
+                        taesdPath: String?): ByteArray
 }

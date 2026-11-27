@@ -3,6 +3,7 @@ package com.littlebit.chat.studio
 import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -61,6 +62,9 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
     var pendingSlot by remember { mutableIntStateOf(0) }
     var staging by remember { mutableStateOf(false) }
     var stageProgress by remember { mutableFloatStateOf(0f) }
+    // Fast VAE (TAESD): optional staged decoder for 1-3 s VAE decoding.
+    var taesd by remember { mutableStateOf(TaesdModel.find(ImageModelStaging.directory(context))) }
+    var taesdError by remember { mutableStateOf("") }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
@@ -92,6 +96,24 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                     shape = align64((it.width * scale).toInt()) to align64((it.height * scale).toInt())
                 }
                 .onFailure { error = it.message.orEmpty() }
+        }
+    }
+    val taesdPick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val name = resolver.query(
+                        uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null,
+                    )?.use { if (it.moveToFirst()) it.getString(0) else null }.orEmpty()
+                    val bytes = resolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L
+                    TaesdModel.validate(name, bytes)?.let { throw IllegalArgumentException(it) }
+                    ImageModelStaging.stage(context, uri, TaesdModel.FILE_NAME, bytes)
+                }
+            }.onSuccess { file ->
+                taesd = file
+                vm.settings.taesdEnabled = true
+                taesdError = ""
+            }.onFailure { taesdError = it.message.orEmpty() }
         }
     }
     val saveAs = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
@@ -186,12 +208,13 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
         },
     ) { padding ->
         Column(
+            // Padding sits inside the scroll container so the top staged-model
+            // card starts below the TopAppBar and never clips under it.
             modifier = Modifier
-                .padding(padding)
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
-                .padding(top = 20.dp, bottom = 16.dp),
+                .padding(padding)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row {
@@ -260,6 +283,74 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                                 Text("Delete staged copy")
                             }
                         }
+                    }
+                }
+            }
+            Card(
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Fast VAE (TAESD)", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                taesd?.let { "Staged · ${ImageModelStaging.formatBytes(it.length())}" }
+                                    ?: "Not staged · ${TaesdModel.DISPLAY_SIZE}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (taesd != null) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = vm.settings.taesdEnabled,
+                            onCheckedChange = { vm.settings.taesdEnabled = it; taesdError = "" },
+                        )
+                    }
+                    Text(
+                        "taesd.safetensors (madebyollin/taesd, MIT, ~9.8 MB) cuts VAE decoding to " +
+                            "about 1–3 s with lower RAM. Off, or without a staged file, Image Studio " +
+                            "decodes with the tiled full VAE.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    if (vm.settings.taesdEnabled && taesd == null) {
+                        Text(
+                            "No taesd.safetensors staged — falling back to tiled full VAE.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(enabled = !vm.busy, onClick = { taesdPick.launch(arrayOf("*/*")) }) {
+                            Text(if (taesd == null) "Select taesd.safetensors" else "Replace")
+                        }
+                        TextButton(enabled = !vm.busy, onClick = {
+                            // Same ACTION_VIEW hand-off as Model Hub: the browser
+                            // downloads it, so the offline build still declares no
+                            // INTERNET permission.
+                            runCatching {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(TaesdModel.URL)))
+                            }.onFailure {
+                                taesdError = "No browser app available. Download taesd.safetensors elsewhere and select it here."
+                            }
+                        }) { Text("Get taesd.safetensors (${TaesdModel.DISPLAY_SIZE})") }
+                        if (taesd != null) {
+                            TextButton(enabled = !vm.busy, onClick = {
+                                ImageModelStaging.delete(requireNotNull(taesd))
+                                taesd = null
+                                vm.settings.taesdEnabled = false
+                            }) { Text("Delete") }
+                        }
+                    }
+                    if (taesdError.isNotEmpty()) {
+                        Text(
+                            taesdError,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
                     }
                 }
             }
@@ -356,6 +447,13 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                 display = steps.toString(),
                 contentDescription = "Steps",
             )
+            ImageStepHint.forModel(slots[0]?.name.orEmpty(), steps)?.let { hint ->
+                Text(
+                    hint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text("Denoise · %.2f".format(strength))
             LittleBitSlider(
                 value = strength,
@@ -365,9 +463,16 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                 contentDescription = "Denoise strength",
             )
             OutlinedTextField(seed, { seed = it }, label = { Text("Seed (−1 for random)") }, singleLine = true)
+            vm.studioNote?.let { note ->
+                Text(
+                    note,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
             if (vm.studioBusy) {
                 Text(stage)
-                Button(onClick = SdNative::cancel) { Text("Cancel") }
+                Button(onClick = vm::cancelImage) { Text("Cancel") }
             } else {
                 val ready = slots[0]?.file != null &&
                     (!qwen || (slots[1]?.file != null && slots[2]?.file != null && (source == null || slots[3]?.file != null)))
@@ -383,7 +488,12 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                         val count = steps
                         val denoise = strength
                         val number = seed.toLongOrNull() ?: -1L
-                        vm.renderImage { generate(paths, input, mask, p, n, w, h, count, denoise, number) }
+                        // Only pass TAESD when the toggle is on and a staged copy exists;
+                        // otherwise the native side keeps the tiled full VAE.
+                        val taesdPath = taesd?.absolutePath?.takeIf { vm.settings.taesdEnabled }
+                        vm.renderImage {
+                            generate(paths, input, mask, p, n, w, h, count, denoise, number, taesdPath)
+                        }
                     },
                 ) { Text(if (vm.isLoaded) "Unload chat model & generate" else "Generate") }
             }
