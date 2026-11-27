@@ -14,6 +14,7 @@ import androidx.lifecycle.viewModelScope
 import com.littlebit.chat.data.Assistant
 import com.littlebit.chat.data.AssistantStore
 import com.littlebit.chat.data.Assistants
+import com.littlebit.chat.data.ChatExport
 import com.littlebit.chat.data.ChatMessage
 import com.littlebit.chat.data.ChatSession
 import com.littlebit.chat.data.ChatStore
@@ -21,6 +22,7 @@ import com.littlebit.chat.data.ContextNote
 import com.littlebit.chat.data.DiffusionModelGuard
 import com.littlebit.chat.data.ModelFiles
 import com.littlebit.chat.data.Notes
+import com.littlebit.chat.data.RamBudgetEstimator
 import com.littlebit.chat.data.NotesStore
 import com.littlebit.chat.data.SettingsStore
 import com.littlebit.chat.engine.*
@@ -284,6 +286,69 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (active != null) applyAssistant(loadedAssistants.firstOrNull { it.id == active }, persist = false)
         if (cloudClient.supported) cloudMode = settings.cloudMode
         refreshKvCacheSize()
+        // A 6 GB-class phone keeps the safe 2K window on first launch. An explicit
+        // user choice is never overwritten.
+        if (!settings.contextSizeChosen && RamBudgetEstimator.isSmallDevice(ramInfo().first)) {
+            settings.contextSize = 2048
+        }
+    }
+
+    // ------------------------------------------------------------ RAM guard
+
+    /** Live total/available RAM and the low-memory flag from ActivityManager. */
+    private fun ramInfo(): Triple<Long, Long, Boolean> {
+        val am = getApplication<Application>().getSystemService(android.content.Context.ACTIVITY_SERVICE)
+            as? android.app.ActivityManager ?: return Triple(0L, 0L, false)
+        val info = android.app.ActivityManager.MemoryInfo()
+        am.getMemoryInfo(info)
+        return Triple(info.totalMem, info.availMem, info.lowMemory)
+    }
+
+    data class RamWarning(val budget: RamBudgetEstimator.Budget, val name: String)
+
+    var ramWarning by mutableStateOf<RamWarning?>(null)
+        private set
+    private var pendingLoad: (() -> Unit)? = null
+
+    fun ramBudget(modelBytes: Long, nCtx: Int = settings.contextSize): RamBudgetEstimator.Budget {
+        val (total, avail, low) = ramInfo()
+        return RamBudgetEstimator.estimate(modelBytes, nCtx, settings.vulkanOffload, total, avail, low)
+    }
+
+    private fun guardRam(modelBytes: Long, name: String, proceed: () -> Unit) {
+        val budget = ramBudget(modelBytes)
+        if (budget.risk == RamBudgetEstimator.Risk.SAFE) proceed() else {
+            pendingLoad = proceed
+            ramWarning = RamWarning(budget, name)
+        }
+    }
+
+    private fun resumeLoad() {
+        val proceed = pendingLoad
+        pendingLoad = null
+        ramWarning = null
+        loadProgress = 0f
+        proceed?.invoke() ?: run { loadProgress = -1f }
+    }
+
+    /** "Load at 2K Context (Recommended)": clamps the window and enables Q8_0 KV. */
+    fun loadAtSafeContext() {
+        settings.contextSize = RamBudgetEstimator.safeContext(settings.contextSize)
+        settings.flash = true
+        resumeLoad()
+    }
+
+    /** "Load on CPU": drops Vulkan offload for this load. */
+    fun loadOnCpu() {
+        settings.vulkanOffload = false
+        resumeLoad()
+    }
+
+    fun loadDespiteRamWarning() = resumeLoad()
+
+    fun dismissRamWarning() {
+        pendingLoad = null
+        ramWarning = null
     }
 
     // ------------------------------------------------------------- chat flows
@@ -299,13 +364,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         activate(store.create())
     }
 
+    /** Clones the conversation through [index] into a new chat and switches to it. */
     fun fork(index: Int) {
         if (busy || index !in currentMessages.indices) return
         val source = currentSession ?: return
+        val slice = ChatExport.forkSlice(currentMessages.toList(), index)
+        if (slice.isEmpty()) return
         cancelPrewarm()
         val branch = store.create()
-        branch.title = source.title + " (Fork)"
-        branch.messages.addAll(currentMessages.take(index + 1))
+        branch.title = ChatExport.forkTitle(source.title)
+        branch.messages.addAll(slice)
         store.touch(branch)
         activate(branch)
     }
@@ -328,6 +396,37 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             currentSession = null
             currentMessages.clear()
             store.sessions.firstOrNull()?.let(::activate) ?: activate(store.create())
+        }
+    }
+
+    // -------------------------------------------------------- idle auto-unload
+
+    /** Set when the idle timer unloaded the model, so the chat can offer one-tap reload. */
+    var idleUnloaded by mutableStateOf(false)
+        private set
+    private var idleJob: Job? = null
+
+    fun dismissIdleUnloaded() { idleUnloaded = false }
+
+    fun idleUnloadMinutes(): Int = when (settings.idleUnload) {
+        "2 min" -> 2
+        "5 min" -> 5
+        "10 min" -> 10
+        else -> 0
+    }
+
+    /** Restarts the idle timer. Never unloads while generating, speaking or benchmarking. */
+    fun scheduleIdleUnload() {
+        idleJob?.cancel()
+        val minutes = idleUnloadMinutes()
+        if (minutes <= 0 || !isLoaded) return
+        idleJob = viewModelScope.launch {
+            delay(minutes * 60_000L)
+            if (!isLoaded) return@launch
+            if (busy || isGenerating || benchmarking || studioBusy) return@launch
+            if (ttsController?.speakingId?.value != null) return@launch
+            idleUnloaded = true
+            unloadModel()
         }
     }
 
@@ -436,7 +535,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun pickModel(uri: Uri) = openDocument(uri, preview = true)
     fun loadModelFromUri(uri: Uri) = openDocument(uri, preview = false)
 
-    private fun openDocument(uri: Uri, preview: Boolean, copyApproved: Boolean = false) {
+    private fun openDocument(uri: Uri, preview: Boolean, copyApproved: Boolean = false, ramApproved: Boolean = false) {
         if (busy) return
         val app = getApplication<Application>()
         cancelLoad = false
@@ -452,6 +551,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val (rawName, size) = ModelFiles.queryDocumentMetadata(app, uri)
                 val name = rawName ?: settings.lastDocumentName
                 require(name.endsWith(".gguf", true)) { "Choose a .gguf model." }
+                if (!preview && !ramApproved) {
+                    val budget = ramBudget(size)
+                    if (budget.risk != RamBudgetEstimator.Risk.SAFE) {
+                        pendingLoad = {
+                            openDocument(uri, preview = false, copyApproved = copyApproved, ramApproved = true)
+                        }
+                        ramWarning = RamWarning(budget, name)
+                        return@launch
+                    }
+                }
                 // Image Studio weights must never reach llama.cpp, and a diffusion
                 // file must not offer a private copy either.
                 if (DiffusionModelGuard.detect(app, uri, name)) {
@@ -581,6 +690,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadLocalModel(file: File) {
+        if (busy) return
+        guardRam(file.length(), file.name) { startLocalLoad(file) }
+    }
+
+    private fun startLocalLoad(file: File) {
         if (busy) return
         cancelLoad = false
         canCancelLoad = true
@@ -879,12 +993,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) { chatError = e.message } finally { endTurn() }
         }
     }
-    private fun endTurn() {
+    private     fun endTurn() {
         finishForeground()
         rawStream = ""
         streamActive = false
         isPrefilling = false
         isGenerating = false
+        scheduleIdleUnload()
         if (newChatAfterTurn) {
             newChatAfterTurn = false
             viewModelScope.launch { createChat() }
@@ -1130,35 +1245,81 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         reloadLastModel()
     }
 
-    fun benchmark() {
+    /** Stops a running benchmark from the setup dialog or the notification. */
+    fun cancelBenchmark() {
+        stopRequested = true
+        activeBenchmark?.stop()
+        engine.stop()
+    }
+
+    /**
+     * Runs [preset] on [backend] ("Current", "CPU" or "Vulkan"). A backend that
+     * differs from the loaded one is loaded for the run and then restored, so the
+     * measured numbers always match the label.
+     */
+    fun benchmark(preset: BenchmarkPreset = BenchmarkPreset.QUICK, backend: String = "Current") {
         if (busy || !isLoaded) return
+        val path = sourceFd?.let { ModelPath.fromDescriptor(it.fd) } ?: activeModelPath ?: return
+        val original = modelInfo?.gpuLayers ?: 0
+        val requested = when (backend) {
+            "CPU" -> 0
+            "Vulkan" -> settings.vulkanGpuLayers.coerceAtLeast(1)
+            else -> original
+        }
+        val label = if (requested > 0) "GPU · Vulkan" else "CPU · KleidiAI"
         stopRequested = false
-        foreground("Benchmarking…") { stopRequested = true; activeBenchmark?.stop() }
+        foreground("Benchmarking…") { cancelBenchmark() }
         benchmarking = true
         viewModelScope.launch(inference) {
             try {
                 cancelPrewarmSuspend()
                 engineMutex.withLock {
+                    if (requested != original) {
+                        engine.unload()
+                        modelInfo = null; draftName = null; cacheSession = null
+                        modelInfo = engine.loadModel(path, settings.contextSize, settings.threads, requested,
+                            settings.batch, settings.flash)
+                        capacity = engine.metrics()[3].toInt()
+                    }
                     val bench = engine.benchmarkContext()
                     activeBenchmark = bench
                     try {
                         val threads = settings.threads
                         bench.setThreads(threads)
+                        bench.reset()
                         val prompt = engine.formatChat(SettingsStore.DEFAULT_SYSTEM_PROMPT,
-                            listOf("user" to ThinkBlocks.withNoThink("Explain how rain forms, step by step.", modelInfo?.architecture)))
-                        val result = bench.generate(prompt, SamplingParams(maxTokens = 96, seed = 42),
+                            listOf("user" to ThinkBlocks.withNoThink(preset.promptText(), modelInfo?.architecture)))
+                        val result = bench.generate(prompt, SamplingParams(maxTokens = preset.genTokens, seed = 42),
                             prefill = { _, _ -> if (stopRequested) bench.stop() })
                         check(result.status == 0) { result.error ?: "Benchmark interrupted" }
                         val m = bench.metrics()
                         val row = "%s · %s · %d threads · %d GPU layers\n%.1f p/s · %.1f t/s · %.0f ms TTFT (%d tokens)".format(
-                            modelName, activeBackendLabel, threads, modelInfo?.gpuLayers ?: 0, m[1], result.tokensPerSec, m[0], result.tokens)
+                            modelName, label, threads, requested, m[1], result.tokensPerSec, m[0], result.tokens)
                         val old = org.json.JSONArray(settings.benchmarkHistory)
                         val rows = org.json.JSONArray().put(row)
                         for (i in 0 until minOf(4, old.length())) rows.put(old.getString(i))
                         settings.benchmarkHistory = rows.toString()
                     } finally { activeBenchmark = null; bench.unload() }
                 }
-            } catch (e: Exception) { chatError = e.message } finally { finishForeground(); benchmarking = false }
+            } catch (e: Exception) {
+                if (!stopRequested) chatError = e.message
+            } finally {
+                if (requested != original || !engine.isLoaded) {
+                    // Restore the backend the user was chatting on; a failed run must
+                    // never leave the app without a usable model.
+                    runCatching {
+                        if (engine.isLoaded) engine.unload()
+                        modelInfo = null; draftName = null; cacheSession = null
+                        modelInfo = engine.loadModel(path, settings.contextSize, settings.threads, original,
+                            settings.batch, settings.flash)
+                        capacity = engine.metrics()[3].toInt()
+                        used = 0
+                    }.onFailure { chatError = "Reload after benchmark failed: ${it.message}" }
+                }
+                finishForeground()
+                benchmarking = false
+                scheduleIdleUnload()
+            }
         }
     }
 

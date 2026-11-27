@@ -74,6 +74,28 @@ class SearchTest {
         assertEquals("Base", SearchPrompts.basePrompt("Base\n" + SearchPrompts.SEARCH_GROUNDED))
     }
 
+    @Test fun blankSystemPromptStaysBlankOffline() {
+        assertEquals("", SearchPrompts.forMode("", grounded = false))
+        assertEquals("", SearchPrompts.forMode("   ", grounded = false))
+    }
+
+    @Test fun blankSystemPromptStillGroundedWhenSearching() {
+        assertEquals(SearchPrompts.SEARCH_GROUNDED, SearchPrompts.forMode("", grounded = true))
+    }
+
+    @Test fun offlineClauseNoLongerRefusesStaticQuestions() {
+        val system = SearchPrompts.forMode("You are helpful.", grounded = false)
+        assertTrue(system.contains("training knowledge"))
+        assertFalse(system.contains("You cannot search the web"))
+        assertTrue(system.contains(SettingsStore.OFFLINE))
+    }
+
+    @Test fun customPersonaKeepsItsOwnText() {
+        val system = SearchPrompts.forMode("You are a physics tutor.", grounded = false)
+        assertTrue(system.startsWith("You are a physics tutor."))
+        assertTrue(system.contains(SettingsStore.OFFLINE))
+    }
+
     @Test fun pinnedNotesAreAppendedAsUserContext() {
         val withNotes = SearchPrompts.withNotes("System", listOf("Project: LittleBit", "Answer in metric"))
         assertTrue(withNotes.startsWith("System"))

@@ -89,6 +89,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.material3.CircularProgressIndicator
@@ -98,7 +99,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.littlebit.chat.data.ChatMessage
+import com.littlebit.chat.engine.ThermalGuard
 import com.littlebit.chat.engine.ThinkBlocks
+import kotlinx.coroutines.delay
 
 private val Suggestions = mapOf(
     "Summarize" to "Summarize the following text: ",
@@ -573,7 +576,18 @@ private fun InputBar(vm: ChatViewModel) {
                 }
             }
         }
-        if (vm.isLoaded && vm.capacity > 0 && !vm.cloudMode) {
+        if (vm.idleUnloaded && !vm.isLoaded) {
+            StatusPill(
+                text = "Model unloaded to save RAM",
+                action = "Reload",
+                onAction = { vm.dismissIdleUnloaded(); vm.reloadLastModel() },
+                onDismiss = vm::dismissIdleUnloaded,
+            )
+        }
+        if (vm.isLoaded && !vm.cloudMode) {
+            ThermalNotice()
+        }
+        if (vm.settings.showContextBar && vm.isLoaded && vm.capacity > 0 && !vm.cloudMode) {
             ContextUsageBar(vm.used, vm.capacity)
         }
         Surface(
@@ -743,5 +757,59 @@ private fun Telemetry(vm: ChatViewModel, timing: com.littlebit.chat.engine.Reply
             if (ratio >= .8f) TextButton(onClick = { details = false; vm.newChatFromMeter() }) { Text("New chat") }
             Spacer(Modifier.height(16.dp))
         }
+    }
+}
+
+/** Compact, non-blocking status strip above the composer. */
+@Composable
+private fun StatusPill(text: String, action: String, onAction: () -> Unit, onDismiss: (() -> Unit)?) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            TextButton(onClick = onAction) { Text(action, style = MaterialTheme.typography.labelMedium) }
+            if (onDismiss != null) {
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, contentDescription = "Dismiss", modifier = Modifier.size(16.dp))
+                }
+            }
+        }
+    }
+}
+
+/** "Device warm — throttling likely" pill. Never blocks: one tap dismisses it. */
+@Composable
+private fun ThermalNotice() {
+    val context = LocalContext.current
+    var level by remember { mutableStateOf(ThermalGuard.Level.NONE) }
+    var dismissed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            val signal = ThermalGuard.read(context)
+            level = ThermalGuard.classify(signal.thermalStatus, signal.headroom)
+            delay(15_000)
+        }
+    }
+    LaunchedEffect(level) { if (level == ThermalGuard.Level.NONE) dismissed = false }
+    if (level != ThermalGuard.Level.NONE && !dismissed) {
+        StatusPill(
+            text = ThermalGuard.message(level),
+            action = "Run anyway",
+            onAction = { dismissed = true },
+            onDismiss = null,
+        )
     }
 }

@@ -229,7 +229,18 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 Choices("Thinking budget", listOf("Off","256","512","1024","Unlimited"), settings.thinkingBudget) { settings.thinkingBudget = it; vm.invalidateDraft() }
                 SwitchRow("Generation notification", "Show speed and Stop during replies", settings.notifyGeneration) { settings.notifyGeneration = it }
                 Choices("Auto-unload in background", listOf("Off","After 1 min","Immediately"), settings.unloadPolicy) { settings.unloadPolicy = it }
+                Choices("Unload idle model", listOf("Off","2 min","5 min","10 min"), settings.idleUnload) {
+                    settings.idleUnload = it
+                    vm.scheduleIdleUnload()
+                }
                 SwitchRow("Keep screen awake", "During generation", settings.keepAwake) { settings.keepAwake = it }
+            } }
+            item { SettingPanel("Chat display") {
+                SwitchRow(
+                    title = "Show context usage bar",
+                    subtitle = "Context used / max under the composer",
+                    checked = settings.showContextBar,
+                ) { settings.showContextBar = it }
             } }
             if (vm.cloudSupported) item { SettingPanel("Cloud API · Standard edition") { CloudSettings(vm) } }
             item { SettingPanel("Appearance") {
@@ -276,9 +287,12 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     Text("Quick benchmark", style = MaterialTheme.typography.titleMedium)
                     Text("Runs a fixed Fast prompt on the loaded backend. Reload with the other backend to compare.",
                         style = MaterialTheme.typography.bodySmall)
-                    TextButton(enabled = vm.isLoaded && !vm.busy, onClick = vm::benchmark) {
-                        Text(if (vm.benchmarking) "Benchmark running…" else "Run Quick Benchmark")
+                    var benchmarkSetup by remember { mutableStateOf(false) }
+                    TextButton(enabled = vm.isLoaded && !vm.busy, onClick = { benchmarkSetup = true }) {
+                        Text(if (vm.benchmarking) "Benchmark running…" else "Benchmark…")
                     }
+                    if (vm.benchmarking) TextButton(onClick = vm::cancelBenchmark) { Text("Cancel benchmark") }
+                    if (benchmarkSetup) BenchmarkSetupDialog(vm, totalRam, availRam) { benchmarkSetup = false }
                     TextButton(enabled = vm.isLoaded && !vm.busy, onClick = vm::compareBackends) { Text("Auto-pick fastest backend") }
                     vm.comparison?.let { (cpu,gpu) ->
                         Text("CPU %.1f t/s · ".format(cpu) + if (gpu > 0) "Vulkan %.1f t/s".format(gpu) else "Vulkan unavailable")

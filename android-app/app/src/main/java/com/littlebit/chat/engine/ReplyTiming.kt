@@ -18,7 +18,10 @@ data class ReplyTiming(val promptTokens: Int, val promptMs: Double, val tokens: 
     val promptRate get() = if (promptMs > 0) promptTokens * 1000 / promptMs else 0.0
     val genRate get() = if (genMs > 0) tokens * 1000 / genMs else 0.0
     fun caption(mode: String): String {
-        val gen = String.format(Locale.ROOT, "%.1f t/s (%s)", genRate, duration(genMs))
+        // TTFT sits next to the rate so a slow first token is visible without
+        // opening the telemetry sheet. Hidden when the engine reported no TTFT.
+        val ttft = if (firstMs > 0) String.format(Locale.ROOT, " · %.0f ms TTFT", firstMs) else ""
+        val gen = String.format(Locale.ROOT, "%.1f t/s (%s)%s", genRate, duration(genMs), ttft)
         return when (mode) {
             "Detailed" -> String.format(Locale.ROOT, "Prompt: %.1f t/s (%s) · Gen: %s", promptRate, duration(promptMs), gen)
             "Off" -> ""

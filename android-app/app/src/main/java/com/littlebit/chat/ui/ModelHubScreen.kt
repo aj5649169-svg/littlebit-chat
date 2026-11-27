@@ -94,6 +94,9 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit, onOpenStudio: () -> Un
         if (uri != null) vm.selectDraft(uri)
     }
 
+    // Pre-load RAM guard: TIGHT/DANGER estimates ask before any native allocation.
+    RamGuardDialog(vm)
+
     fun openInChrome(url: String) {
         val target = Uri.parse(url)
         if (target.scheme != "https" || target.host.isNullOrBlank()) return

@@ -127,9 +127,11 @@ fun ContextUsageBar(used: Int, capacity: Int, modifier: Modifier = Modifier) {
         }
         Spacer(Modifier.width(8.dp))
         Text(
-            "%,d / %,d tok".format(used, capacity),
+            "Context %,d / %,d · %d%%".format(used, capacity, ((fraction * 100).toInt())),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
         )
     }
 }
