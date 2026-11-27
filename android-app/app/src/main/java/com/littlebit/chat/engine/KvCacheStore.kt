@@ -81,6 +81,9 @@ object KvCacheStore {
     const val LLAMA_COMMIT = "6aee508"
     const val MAX_ENTRIES = 2
 
+    /** Below this many tokens a cache write costs more than the prefill it saves. */
+    const val MIN_SAVE_TOKENS = 1024
+
     fun sha256(text: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
         return digest.joinToString("") { "%02x".format(it) }

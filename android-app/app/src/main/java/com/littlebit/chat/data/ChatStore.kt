@@ -13,25 +13,44 @@ import java.util.UUID
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class ChatMessage(val role: String, val content: String, val fast: Boolean = false, val cutOff: Boolean = false,
-                       val timing: ReplyTiming? = null, val backend: String = "", val sources: List<String> = emptyList(),
-                       val searchQuery: String = "")
 class ChatSession(val id: String, title: String, updatedAt: Long, val messages: MutableList<ChatMessage>, pinned: Boolean = false) {
     var title by mutableStateOf(title)
     var updatedAt by mutableStateOf(updatedAt)
     var pinned by mutableStateOf(pinned)
+
+    /** Messages dropped from the start of this chat to stay inside [ChatBudget]. */
+    var trimmed: Int = 0
 }
 
-/** JSON chat history with guarded writes and recoverable streaming drafts. */
+/**
+ * JSON chat history with guarded writes and recoverable streaming drafts.
+ *
+ * Writes stream one message at a time so a long chat never needs the whole
+ * history encoded as a single `String`. Reads refuse a file above
+ * [ChatBudget.MAX_FILE_BYTES] and keep only the newest
+ * [ChatBudget.MAX_MESSAGES_PER_CHAT] messages per chat, both with a visible,
+ * recoverable message instead of an OOM kill.
+ */
 class ChatStore(private val file: File) {
     val sessions = mutableStateListOf<ChatSession>()
     @Volatile var lastError: String? = null
         private set
 
+    /** True when the history file was refused for size; the UI offers export. */
+    @Volatile var oversized: Boolean = false
+        private set
+
     @Synchronized
     fun load() {
         sessions.clear()
+        oversized = false
         if (!file.exists()) return
+        if (ChatBudget.isOversized(file.length())) {
+            oversized = true
+            lastError = ChatBudget.overLimitMessage(file.length())
+            Log.e("LittleBitChatStore", lastError!!)
+            return
+        }
         try {
             val root = JSONObject(file.readText())
             val arr = root.optJSONArray("chats") ?: return
@@ -48,12 +67,20 @@ class ChatStore(private val file: File) {
                         m.optString("backend"), m.optJSONArray("sources")?.let { links -> List(links.length()) { links.getString(it) } }.orEmpty(),
                         m.optString("searchQuery")))
                 }
+                val dropped = ChatBudget.trimmedCount(messages.size)
+                val kept = if (dropped > 0) {
+                    messages.drop(dropped).toMutableList<ChatMessage>().also {
+                        it.add(0, ChatMessage("system", ChatBudget.trimmedNotice(dropped)))
+                    }
+                } else {
+                    messages
+                }
                 sessions.add(ChatSession(
                     id = o.getString("id"),
                     title = o.optString("title", "New chat"),
                     updatedAt = o.optLong("updatedAt", 0L),
-                    messages = messages, pinned = o.optBoolean("pinned"),
-                ))
+                    messages = kept, pinned = o.optBoolean("pinned"),
+                ).also { it.trimmed = o.optInt("trimmed", dropped) })
             }
             sessions.sortByDescending { it.updatedAt }
             lastError = null
@@ -63,42 +90,25 @@ class ChatStore(private val file: File) {
         }
     }
 
+    /**
+     * Streams the history to `<file>.tmp` and renames it into place. Peak heap
+     * is one encoded message plus the writer buffer, not the whole document.
+     */
     @Synchronized
     fun save(): Boolean {
         val parent = file.parentFile ?: file.absoluteFile.parentFile
         val tmp = File(parent, file.name + ".tmp")
         return try {
-            val root = JSONObject()
-            val rows = JSONArray()
-            for (s in sessions) {
-                val o = JSONObject()
-                o.put("id", s.id)
-                o.put("pinned", s.pinned)
-                o.put("title", s.title)
-                o.put("updatedAt", s.updatedAt)
-                val messages = JSONArray()
-                for (m in s.messages) {
-                    val mo = JSONObject()
-                    if (m.sources.isNotEmpty()) mo.put("sources", JSONArray(m.sources))
-                    if (m.searchQuery.isNotEmpty()) mo.put("searchQuery", m.searchQuery)
-                    mo.put("fast", m.fast)
-                    mo.put("cutOff", m.cutOff)
-                    mo.put("role", m.role)
-                    mo.put("content", m.content)
-                    m.timing?.let { t ->
-                        mo.put("backend", m.backend)
-                        mo.put("timing", JSONObject().put("promptTokens", t.promptTokens).put("promptMs", t.promptMs)
-                            .put("tokens", t.tokens).put("genMs", t.genMs).put("firstMs", t.firstMs)
-                            .put("used", t.used).put("capacity", t.capacity))
-                    }
-                    messages.put(mo)
-                }
-                o.put("messages", messages)
-                rows.put(o)
-            }
-            root.put("chats", rows)
             if (!parent.exists() && !parent.mkdirs()) throw IllegalStateException("Could not create chat history directory.")
-            tmp.writeText(root.toString())
+            tmp.bufferedWriter(Charsets.UTF_8).use { writer ->
+                ChatJson.writeHeader(writer)
+                sessions.forEachIndexed { index, session ->
+                    ChatJson.writeSeparator(writer, index == 0)
+                    ChatJson.writeSession(writer, session.id, session.title, session.updatedAt,
+                        session.pinned, session.trimmed, session.messages)
+                }
+                ChatJson.writeFooter(writer)
+            }
             try {
                 Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             } catch (_: Exception) {
