@@ -1,144 +1,97 @@
 # LittleBit Chat
 
-Private, on-device AI chat and image editing for Android ARM64. No accounts, no telemetry: bring a GGUF model and keep conversations and photos on your phone. The **Offline** edition has no network permission at all; the **Standard** edition adds opt-in web search and bring-your-own-key cloud APIs.
+Private, on-device AI chat and image generation/editing for Android ARM64. Bring your own GGUF model; inference, chats, and photos stay on your phone. No account or telemetry. The **Offline** edition is built with no `INTERNET` or `ACCESS_NETWORK_STATE` permission, and Settings → **Privacy & permissions** verifies the installed app's actual requested permissions. The **Standard** edition is a separate install with optional per-message web search and cloud providers.
 
-![Android ARM64](https://img.shields.io/badge/Android_9%2B-ARM64-326149) ![Engines](https://img.shields.io/badge/llama.cpp_%2B_stable--diffusion.cpp-on--device-344861) ![UI](https://img.shields.io/badge/Jetpack_Compose-Material_3-624979) [![Download release APK](https://img.shields.io/badge/Download-release_APK-136449)](https://github.com/aj5649169-svg/littlebit-chat/releases/latest)
+![Android ARM64](https://img.shields.io/badge/Android_9%2B-ARM64-326149) ![Engines](https://img.shields.io/badge/llama.cpp_%2B_stable--diffusion.cpp-on--device-344861) ![Privacy](https://img.shields.io/badge/Offline-zero_network_permissions-2e7d32)
 
-## Two signed editions
+## Editions and quick start
 
-| Edition | Network permission | What it adds |
+| Edition | Network access | Features |
 | --- | --- | --- |
-| **Offline** (`com.littlebit.chat`) | None. CI parses the merged release manifest and fails on `INTERNET`/`ACCESS_NETWORK_STATE`. | Chat, Model Hub, Image Studio, offline TTS, assistants and pinned notes, KV cache. Downloads open in your browser; nothing in the app can reach the network. |
-| **Standard** (`com.littlebit.chat.standard`) | `INTERNET` only | Everything in Offline plus opt-in, per-message DuckDuckGo/SearXNG Web Search and a `Local | Cloud` mode for OpenAI-compatible APIs. Installs alongside Offline. |
+| **Offline** (`com.littlebit.chat`) | No network permissions; CI checks the merged release manifest. | Local chat, Model Hub, Image Studio, offline TTS, assistants, and pinned notes. |
+| **Standard** (`com.littlebit.chat.standard`) | Network permission for explicitly enabled features. | Everything in Offline, plus opt-in per-message DuckDuckGo/SearXNG search and OpenAI-compatible cloud APIs. |
 
-Both editions are signed ARM64 APKs of about **41 MB**, bundling two native engines: patched `llama.cpp` (LittleBit `Q1_0` + Arm KleidiAI) and `stable-diffusion.cpp` in `libsd_jni.so`. Model weights are separate downloads and are never bundled.
+Both editions are signed ARM64 APKs. Install from [Releases](https://github.com/aj5649169-svg/littlebit-chat/releases/latest), open **Model Hub → Load Local .gguf**, and choose a model. Seekable documents load directly; if a provider cannot be read directly, the app offers a confirmed private copy. Open **☰ → Image Studio** to generate an image or inpaint a photo.
 
-## Quick start
+## Features
 
-1. Download the APK for the edition you want from [Releases](https://github.com/aj5649169-svg/littlebit-chat/releases/latest) and open it. If Android asks, allow **Install unknown apps** for the browser or file manager; you can revoke it afterwards.
-2. Open **Model Hub** → **Load Local .gguf** and pick a model. Direct loading keeps Android's zero-copy file descriptor: nothing is copied, no extra storage is used, and multi-gigabyte models start immediately. Providers that cannot serve a seekable file offer a one-time **Private copy** instead.
-3. Pick **Fast** for short answers or **Think** for reasoning models, then send. If a direct load ever fails, the model error card offers **Import private copy instead** in one tap.
-4. For images, open **☰ → Image Studio**, choose a model, and generate or paint a mask over a photo.
+### Private local inference
 
-## Model Hub and RAM fit
+- **Vulkan GPU offload and Arm KleidiAI CPU fallback.** Switch between Vulkan and CPU, tune GPU layers and threads, run a benchmark on a selected backend, or use automatic backend selection.
+- **GGUF Model Hub** with model categories, device RAM-fit guidance, and direct loading. Diffusion models are identified and kept out of the chat loader.
+- **Automatic KV-cache resume.** Cache persistence is enabled by default for eligible prompts (at least 1,024 tokens); validated cache hits resume saved context and report the restore time. Stale or incompatible caches safely fall back to prefill.
+- Streaming chat with context/prefill metrics, Markdown, Fast/Think modes, normalized reasoning display, and reusable prompt context.
+- Chat tools: templates, personas and assistants, pinned notes, attachments, calculator, edit/resend, regenerate, continue, fork, search, rename, and Markdown export. Chat history has size/message safeguards and JSON import/export.
+- Offline read-aloud using Android text-to-speech.
 
-The catalog groups models into **0.55-Bit (LittleBit)**, **8B spotlight**, **Compact**, **Large 2-bit** and **Image**. Badges (`Great fit` / `Tight — use 2K ctx` / `May OOM`) and the **Fits my phone** filter are computed from **total device RAM** minus realistic Android OS headroom — not from the fluctuating `availMem` value — so results stay stable while other apps run.
+### Image Studio
 
-- **0.55-Bit (LittleBit).** The advanced `Q1_0` conversion path sits right next to the 8B spotlight and carries an **Advanced · conversion only** badge. The card size badge and RAM note describe the same build: the Q4_K-embedding file is ~1.46 GB on disk and ~1.20 GiB resident, and F16-embedding builds are ~3.0 GB. An experimental early checkpoint for ultra-low-RAM testing, not an everyday model yet. Correctness and long-context quality are still being measured, and the entry links to the upstream conversion instructions rather than a prebuilt file.
-- **8B spotlight.** Qwen3 8B, DeepSeek R1 0528 Qwen3 8B, Ministral 3 8B, Llama 3.1 8B and Qwen2.5 Coder 7B at roughly 2.8–3.8 GB. A 3.5 GB 2-bit 8B model is `Great fit` on a 12 GB phone and stays visible with **Fits my phone** on.
-- **Image.** Verified Hugging Face links that open in the browser, so the Offline edition keeps zero internet permission:
-  - **SD 1.5 Inpainting** — recommended for 6–8 GB phones such as the Exynos 1380; brush-mask photo inpainting. Ships as a single 1.9 GB `Q8_0` **`.gguf`** (no unsupported `.ckpt` checkpoint).
-  - **SD-Turbo** — 1–4 step text-to-image at 512 px on 6–8 GB phones.
-  - **Qwen-Image-2.1-Turbo (2-Bit)** — `AD-Q2_K`/`Q2_K` denoiser plus a 2-bit Qwen3-VL-8B text encoder, the Qwen Image 2.1 VAE and an optional `mmproj-F16` for photo edits.
+On-device `stable-diffusion.cpp` supports **SD 1.5**, **SD-Turbo**, SD 1.5 inpainting with a photo and mask, and experimental Qwen image editing. Weights are staged safely from Android document providers; generation releases chat-model memory first. Phase-aware progress reports sampling steps (not checkpoint tensor loading), cancellation is safe during initialization, and inpainting models require both a photo and mask. Image Studio state survives navigation while generation continues.
 
-### Diffusion files never reach llama.cpp
+### Prompt and sampling controls
 
-GGUF and SafeTensors are shared by chat and image models. Before a load or a private copy, Model Hub inspects the file name and the GGUF metadata (architecture, metadata keys, tensor names such as `model.diffusion_model.*`, `first_stage_model.*` or `cond_stage_model.*`). An image model is never handed to `llama.cpp` and never offered a private copy; the card reads **"This looks like an Image Studio model, not a text chat LLM."** with a one-tap **Open Image Studio** button, and any failed copy is cleaned up.
+- Built-in Chat Templates for ChatML, Llama 3, Mistral, Gemma, Alpaca, and Vicuna, plus a user-editable custom template.
+- Configurable stop strings and normalized Gemma 4/Qwen3 thinking channels.
+- The full `llama.cpp` sampler suite: temperature, top-k, top-p, min-p, repeat/frequency/presence penalties, DRY, XTC, Top-N-Sigma, Typical-p, DynaTemp, and Mirostat v2. Sampler settings persist together; explicit seed locking supports every uint32 value, including `0xFFFFFFFF`. Mirostat's mutually exclusive sampler rules and canonical sampler order are respected.
 
-## Image Studio
+### Standard edition connectivity
 
-The bundled `stable-diffusion.cpp` engine runs fully on-device. SD 1.5 / SD-Turbo use a single weights file; Qwen Image 2.1 Turbo takes denoiser, text encoder, VAE and optional vision projector slots.
+Web search is opt-in per message. The Standard edition also offers Local | Cloud providers (including OpenRouter, NVIDIA, Groq, Ollama, and custom OpenAI-compatible endpoints). API keys are encrypted with Android Keystore. The Offline edition contains no cloud networking implementation or network permissions.
 
-`stable-diffusion.cpp` opens weights with `std::ifstream`, which Android 11–16 FUSE blocks for `/proc/self/fd/<N>`. Image Studio therefore **stages** a picked weight once into app-private storage:
+## Version History
 
-- Headers and sizes are always read through `contentResolver.openInputStream(uri)`; no validator ever reopens a descriptor path by string.
-- A file whose display name and byte size already match is reused instantly, with zero re-copying.
-- Otherwise a confirmation dialog shows the exact size and a progress bar while the copy runs on `Dispatchers.IO`, writes `<name>.tmp`, and renames atomically. Cancelling or failing deletes the partial file.
-- The active staged model name and size are shown in the slot card with a one-tap **Delete staged copy** button, and **Generate** enables once every required slot is staged.
+Each entry describes the user-visible changes introduced in that version relative to the preceding version. The first release establishes the initial baseline.
 
-Generation unloads the active chat model first (the last-used path stays for one-tap reload in Chat), then reports **Freed chat model RAM — generating…**. The VAE always decodes with `vae_tiling_params.enabled`, weights stay file-backed through `enable_mmap`, and the optional **Fast VAE (TAESD)** toggle passes a staged `taesd.safetensors` through `sd_ctx_params_t.taesd_path` to cut decoding to ~1–3 s; without it Image Studio falls back to the tiled full VAE. **Cancel** signals `sd_cancel_generation(SD_CANCEL_ALL)`, so the run exits cleanly instead of sitting on *Decoding VAE…*, and resolution chips scroll horizontally so `1024×1024` is never clipped. Results can be saved to Photos or shared.
+### v1.3.4 — Full sampler suite
 
-## Chat
+- Added the complete `llama.cpp` sampler controls, seed locking, sampler-group settings UI, and persistent sampler configuration with migration from earlier settings.
+- Defined and tested the exact 22-slot Kotlin/JNI sampler ABI and canonical chain; Mirostat v2 enforces its sampler exclusions. Defaults preserve v1.3.3 output.
+- Improved slider accessibility and touch targets.
 
-- **Engines.** Vulkan GPU offload by default, falling back to Arm KleidiAI CPU if initialization fails; tune GPU layers and threads in Settings. Quick Benchmark and **Auto-pick fastest backend** compare backends without clearing the active chat.
-- **Streaming.** KV-prefix reuse avoids re-decoding unchanged history, prefill progress is reported per token, and completed Markdown blocks are cached while you scroll manually.
-- **Ergonomics.** A floating **Jump to bottom** button appears when you scroll up (driven by `derivedStateOf`, never by reading `layoutInfo` in composition), Send hides the keyboard, and a thin **context usage bar** shows estimated used versus active context tokens.
-- **Thinking.** ` thinking…</think>` and `<thinking>…</thinking>` are parsed identically, including a closing tag split across streaming chunks and cancelled partial thoughts. Reasoning stays in a collapsible card.
-- **Attachments & plugins.** The `+` sheet uses rounded, elevated action rows with tinted leading icons, titles and subtitles instead of bare text lines.
-- **Chat tools.** Attach text or code, use prompt templates, `/calc`, optional local clock context, system personas, edit-and-resend, regenerate, continue, forks, pin/rename/search chats, and Markdown export.
+### v1.3.3 — Image Studio correctness and prompt/engine controls
 
-## Offline read-aloud
+- Fixed misleading image progress, cancellation during initialization, SD inpainting without a photo/mask, and lost Studio state on back navigation.
+- Added built-in and custom chat templates, configurable stop strings, token counting, and Gemma 4/Qwen3 thinking-channel normalization.
 
-Every finished reply has a **Speak / Stop** control. `OfflineTtsController` uses the platform `TextToSpeech` engine (declared through a manifest `<queries>` entry, with no network permission), starts lazily on the first tap, and reports a readable message when no engine or matching voice is installed. `TtsTextSanitizer` strips reasoning blocks, fenced code and Markdown, then splits the text into sentence-safe chunks of at most 3,000 characters (`QUEUE_FLUSH` for the first, `QUEUE_ADD` for the rest). The engine is stopped and shut down in `onCleared()`.
+### v1.3.2 — Trust, history safety, and cache resume
 
-## Assistants and pinned notes
+- Fixed a v1.3.1 cold-start crash; corrected Model Hub RAM guidance and load recovery, including a model-load lockup.
+- Added bounded/streamed chat-history persistence, JSON import, and crash-log Copy/Report actions.
+- Enabled eligible KV-cache saves by default, surfaced measured cache-hit resume time, and added the Privacy & permissions inspector.
+- Clarified model conversion guidance and Q4_0 speed/RAM trade-offs.
 
-Chat stays a blank scratchpad by default; nothing is blocked behind a character picker. **☰ → Assistants & Notes** offers three ready-made assistants plus **Create Assistant**:
+### v1.3.1 — Stability and device-aware controls
 
-- Each assistant stores a name, a system prompt and optional temperature, output-token and Think/Fast overrides. Existing v1.2.x custom personas migrate once into a **Custom** assistant.
-- **Pinned context notes** can be global or per-chat, with a title, short text and an enabled toggle. Enabled notes are appended to the system context as an explicit user-authored block.
+- Added pre-load RAM estimates and confirmation choices, a backend/preset benchmark setup, idle model auto-unload, thermal warnings, and context/TTFT display controls.
+- Added chat forks and Markdown export; improved offline prompt behavior so static questions receive direct answers.
+- **Upgrade note:** this release had a cold-start crash and a model-load lockup on affected paths; v1.3.2 contains the fixes.
 
-## Save KV cache (opt-in)
+### v1.3.0 — Image, chat, and connectivity expansion
 
-Settings → **Backend & Model** has **Save KV cache on disk**, off by default, and a **Clear KV cache (X.X MB)** button that reports real usage of `cacheDir/kv_cache/`.
+- Added safe Image Studio model staging and diffusion-file detection in Model Hub; improved search grounding and query display.
+- Added offline TTS, assistants, pinned notes, saved KV cache, richer chat controls, and Standard-only cloud APIs and web search.
+- Added the LittleBit low-bit model tier and Android 15/16 16 KiB-aligned ARM64 native libraries.
 
-- Saves `<chatId>.kv` plus `<chatId>.meta.json` (`modelFingerprint`, `nCtx`, `kvCacheType`, `backendMode`, `nGpuLayers`, `llamaCommit = 6aee508`, `savedTokenCount`, `promptHash`) through a `.tmp` file and an atomic rename.
-- Restores only when every sidecar field and the conversation-prefix hash match. Any mismatch, corruption or failed load clears the KV memory, deletes the stale pair and falls back to a normal prefill — a cache miss is never a crash, and the native LCP check keeps token reuse safe.
-- Keeps the two most recently used chats and evicts the rest.
+### v1.2.1 — Real-device loading and image fixes
 
-## Standard edition: web search and cloud APIs
+- Fixed direct Android document-provider model loading and descriptor lifetimes, foreground-service stop behavior, and Model Hub RAM-fit estimates.
+- Added the supported SD 1.5 inpainting model entry, image navigation improvements, and clearer crash-log formatting.
 
-Web Search is per-message and opt-in. When it is on and snippets attach for a turn, the offline refusal clause is replaced with an explicit search-grounded instruction ("Live web search results are attached. Answer directly using these results and cite sources…"). When it is off, the strict offline grounding stays. Short or referential follow-ups ("now you can", "try again", "search it") are combined with the most recent substantive question by a pure `SearchQueryBuilder`, and the Sources sheet shows **Searched: "…"** at the top.
+### v1.2.0 — Two editions and expanded model/image support
 
-**Local | Cloud** is gated to the Standard edition: the interface and UI live in the shared source set, `CloudFactory` is a no-op in `offline` (no network imports, no permission) and a real `HttpURLConnection` client in `standard`.
+- Introduced separate Offline and Standard editions, per-message web search in Standard, direct GGUF document loading, RAM-aware Model Hub filters, and Image Studio support for inpainting and experimental image editing.
+- Improved chat navigation and generation-state handling. **This release had a broken build; use v1.2.1 or later.**
 
-- Presets: **OpenRouter** (`https://openrouter.ai/api/v1`, with `HTTP-Referer` and `X-Title: LittleBit Chat`), **NVIDIA NIM**, **Groq**, **Ollama (Local LAN)** and **Custom OpenAI-compatible**, plus a model-ID field and **Fetch models** (`GET /models`).
-- Streaming `/v1/chat/completions` handles `data:` and `data: ` spellings, blank lines, `: OPENROUTER PROCESSING` keep-alives, `[DONE]`, `delta.reasoning_content`, `delta.reasoning`, inline thinking tags, `errorStream` bodies and immediate Stop via `disconnect()`.
-- `CloudEndpointValidator` requires `https://` for every public host and allows cleartext `http://` only for `localhost`, `127.0.0.1`, `::1` and private `10.x` / `172.16–31.x` / `192.168.x` addresses. User info, query strings and fragments are rejected.
-- API keys are encrypted with **AndroidKeyStore** (`AES/GCM/NoPadding`, randomized encryption, fresh 12-byte IV stored as `[IV || ciphertext]`), excluded from Android backups, never logged, and unreadable entries are cleared with a prompt to re-enter the key instead of crashing.
+### v1.1.0 — First release in this repository
 
-## Settings
+- Established the ARM64 on-device chat app with the v1.1 inference engine, Vulkan offload with Arm KleidiAI CPU fallback, local GGUF loading, reusable chat context, an on-device Quick Benchmark, and an editorial Material 3 interface.
 
-Device & memory banner, backend and sampling sliders built on the lightweight `LittleBitSlider` (thin track, no tick dots, 16 dp thumb, haptic steps, numeric value pill), appearance (System/Light/Dark/AMOLED, accents, 13/15/17 sp), generation notification, auto-unload policy, KV cache controls, cloud panel (Standard only) and a readable last-crash log with real line breaks.
+## Roadmap
 
-## What changed in 1.3.2
-
-- **Chat history cannot OOM the app any more.** `ChatStore` refuses a history file above 16 MB with a recoverable *History too large — export first* message instead of parsing it, keeps only the newest 300 messages per chat (with a visible trimmed-count notice), and writes the file one message at a time through `ChatJson` so saving never needs the whole document in memory.
-- **Chat JSON import.** Settings → *Chat history* → **Import chat JSON** re-imports a Chat JSON export, including multi-chat files and the bare `{"title","messages"}` shape. Unknown roles are dropped and oversized imports keep the newest 400 messages.
-- **Lessons from the field.** Crash log gained **Copy** and **Report** actions, and Settings → *Privacy & permissions* lists the permissions this install actually requested — `Zero network permissions — verified on this install` on the Offline edition.
-- **KV cache is on by default.** It now writes only above 1K tokens (below that a prefill is cheaper than the cache write) and the metrics sheet reports **Resumed in Xs (cache hit)**.
-- **Honest Model Hub.** The sub-1-bit entry no longer claims an exclusive path it cannot hand you: it is **Advanced · conversion only** with no prebuilt checkpoint. The 8B spotlight now explains the ARM `Q4_0` online repacking win (roughly 2–3× faster prompt processing).
-
-## What changed in 1.3.1(still in development)
-
-- **RAM guard, calibrated for real phones.** `RamBudgetEstimator` scores every local load (`SAFE` / `TIGHT` / `DANGER`) against **total RAM**, crediting the model that will be unloaded first. DANGER is `lowMemory` or >75 % of total; TIGHT is >62 %; a low `availMem` reading only adds a warning on 6.5 GB-or-smaller devices or when the model exceeds 55 % of total RAM and free-plus-reclaimed is short by 40 %. A 12 GB phone loading a 5.9 GB estimate (~52 %) stays SAFE. The dialog only suggests a *lower* context than the one requested, offers **Load on CPU** only when Vulkan is on, always has **Load Anyway** and **Cancel**, scrolls on small screens, and Settings → *RAM safety warnings* (default on) can bypass it entirely. First launch on a 6.5 GB-or-smaller device keeps a 2K window unless the user chose one.
-- **Benchmark setup dialog.** Tap Benchmark to pick a backend (`Current` / `CPU` / `Vulkan`) and a preset (`Quick 64/64`, `Standard 128/128`, `Stress 256/256`), see live free/total RAM, get a low-memory warning and cancel a running run. A non-current backend is loaded for the run and restored afterwards.
-- **Calmer offline prompt.** The offline clause now asks for direct answers from training knowledge and mentions being offline only for live data — small 1B models no longer refuse static questions. An intentionally blank system prompt stays blank when web search is off.
-- **Chat display controls.** New **Show context usage bar** toggle and a compact `Context used / max · %` read-out; TTFT now sits beside the speed in message metrics.
-- **Idle auto-unload + thermal notice.** Settings → *Unload idle model* (`Off`, `2 min`, `5 min` default, `10 min`) frees RAM after inactivity (never mid-generation, TTS or benchmark) and leaves a one-tap Reload pill. `ThermalGuard` reads `getThermalHeadroom(10)` with a status fallback and shows a non-blocking *Device warm — throttling likely* pill with **Run anyway**.
-- **Fork and export.** *Fork chat from here* clones the conversation through any reply, and *Export Markdown* writes clean Markdown with reasoning stripped through `ACTION_SEND` — no storage or network permission.
-
-## What changed in 1.3.0
-
-- **Image Studio input fix.** No component opens `/proc/self/fd/<N>` by string path any more; weights are validated through SAF streams and staged once into app-private storage with progress, atomic writes and a delete button. Top spacing and scrolling resolution chips fix the clipped UI.
-- **Image models rejected by Model Hub.** A filename plus GGUF metadata guard stops diffusion files from reaching `llama.cpp` and offers **Open Image Studio** instead.
-- **0.55-Bit (LittleBit).** The sub-1-bit tier is promoted next to the 8B spotlight with an **Advanced · conversion only** badge and a consistent ~1.46 GB file / ~1.20 GiB resident RAM note (F16-embedding builds ~3.0 GB).
-- **Search grounding.** The system prompt switches between offline and search modes, follow-up queries are resolved against the previous substantive message, and the searched query is recorded on the message.
-- **Polished UI.** Sheet action rows, aligned drawer icons, minimal sliders, jump-to-bottom, keyboard dismissal, context usage bar and both thinking tag forms.
-- **Offline TTS.** Speak/Stop per reply with chunking and full lifecycle cleanup.
-- **Assistants and pinned notes.** Optional one-tap personas and global/per-chat context notes.
-- **KV cache.** Opt-in, LRU-limited save/restore with strict sidecar validation.
-- **Cloud APIs.** Standard-only `Local | Cloud` streaming, presets, model listing and AndroidKeyStore key storage.
-- **16 KiB ELF alignment (Android 15–16).** Both editions build with **NDK r28c (`28.2.13676358`)**. CI verifies both release APKs with `unzip -t`, `zipalign -c -P 16 4`, `apksigner verify --verbose`, `aapt2 dump badging` and an `llvm-readelf` 16 KiB `LOAD` alignment check on every packaged `.so`.
-
-## What changed in 1.2.1
-
-- No leaked SAF descriptors: provider `ParcelFileDescriptor`s are closed on load failure, model replacement and unload.
-- Foreground-service stop race fixed with revision-gated stop intents.
-- Stale private-copy prompts cleared on unload, unlink, dismissal or a successful copy.
-- Honest RAM estimates derived from measured `totalMem`, so a "12 GB" phone is planned at ~9.5 GB.
-- Supported inpainting download (public `Q8_0` `.gguf` instead of an unsupported `.ckpt`).
-- Crash-log normalization for literal `\n`/`\r\n`/`\t` escapes.
-- Image Studio in the drawer, opens without a loaded model and returns to Chat on system Back.
-
-## Device testing status
-
-Tested on Android 16 with a 12 GB phone and an 8 GB Exynos 1380 device: direct GGUF loading, 2-bit 8B chat, Model Hub RAM hints, Image Studio navigation and background generation. SD 1.5 Inpainting and Qwen Image 2.1 Turbo 2-bit were exercised on the 12 GB device; the 0.55-bit checkpoint, low-RAM timings and cloud providers are still being measured. Report device, RAM, model, quant and provider when filing an issue.
+- **v1.3.5:** SQLite chat storage with WAL, migration from the current JSON store, and Image Studio TAESD/progress polish.
+- **v1.3.6–v1.3.9:** conversation variants and summaries; richer character cards and links; lorebooks and Author's Note; performance, token-estimation, intent, and state-contract improvements.
+- **v1.4.0:** Material 3 UI overhaul across Chat, History, Model Hub, Settings, Image Studio, Assistants/Characters, and prompt tools. Roadmap items are planned, not shipped.
 
 ## Build and credits
 
-Clone with `git clone --recurse-submodules https://github.com/aj5649169-svg/littlebit-chat.git`, then run `bash scripts/apply-patches.sh` from the root. It applies `patches/0001-littlebit.diff` (LittleBit `Q1_0`) and `patches/0002-android-saf-fd.diff` (Android SAF loading with a buffered-read fallback) against `llama.cpp` `6aee508`. The script is idempotent: already-applied patches are detected with `git apply --reverse --check` and skipped.
-
-The [Android build workflow](.github/workflows/build-android-apk.yml) pins JDK 17, Android SDK, **NDK r28c (`28.2.13676358`)** for 16 KiB-aligned arm64 libraries, Gradle 8.10 and the host Vulkan shader compiler, runs the offline and standard unit tests, builds `:app:assembleRelease` for both flavors, then verifies **each** APK with `unzip -t`, `zipalign -c -P 16 4`, `apksigner verify --verbose`, `aapt2 dump badging` and a 16 KiB ELF `LOAD` alignment check on every packaged `.so` (`libllama_jni.so`, `libsd_jni.so`, `libc++_shared.so`). Pushes to `main` publish a build artifact; version tags publish both APKs with SHA-256 checksums. Release builds need `ANDROID_RELEASE_KEYSTORE_BASE64`, `ANDROID_RELEASE_STORE_PASSWORD`, `ANDROID_RELEASE_KEY_ALIAS` and `ANDROID_RELEASE_KEY_PASSWORD` as repository secrets; keep the same signing key for updates.
-
-Built on [llama.cpp](https://github.com/ggml-org/llama.cpp) (pinned at `6aee508`), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), [Arm KleidiAI](https://github.com/ARM-software/kleidiai), and the LittleBit work from [GeniusDevam/littlebit-gguf](https://github.com/GeniusDevam/littlebit-gguf). The upstream MIT notice is preserved in [LICENSE](LICENSE). Third-party components and separately downloaded model weights retain their respective licenses.
+Clone with `git clone --recurse-submodules https://github.com/aj5649169-svg/littlebit-chat.git`, then run `bash scripts/apply-patches.sh` from the repository root. CI builds the signed Offline and Standard ARM64 APKs and checks release artifacts. The app builds on [llama.cpp](https://github.com/ggml-org/llama.cpp), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), and [Arm KleidiAI](https://github.com/ARM-software/kleidiai).
