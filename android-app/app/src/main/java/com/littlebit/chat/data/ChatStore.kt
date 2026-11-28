@@ -96,6 +96,10 @@ class ChatStore(private val file: File) {
      */
     @Synchronized
     fun save(): Boolean {
+        if (oversized) {
+            lastError = ChatBudget.overLimitMessage(file.length())
+            return false
+        }
         val parent = file.parentFile ?: file.absoluteFile.parentFile
         val tmp = File(parent, file.name + ".tmp")
         return try {

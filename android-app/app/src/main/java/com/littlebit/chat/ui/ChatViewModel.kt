@@ -84,7 +84,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Wall-clock restore time of the last KV cache hit, or -1 when none. */
     var kvResumeMillis by mutableLongStateOf(-1L)
         private set
-        private set
     private val kvCacheDir: File get() = File(getApplication<Application>().cacheDir, "kv_cache")
 
     // ------------------------------------------------- standard-edition cloud API
@@ -318,8 +317,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         store.load()
+        store.lastError?.let { chatError = it }
         val restored = store.sessions.firstOrNull()
-        if (restored != null) activate(restored) else createChat()
+        if (restored != null) activate(restored) else if (!store.oversized) createChat()
         refreshLocalModels()
         val (loadedAssistants, active) = assistantStore.load(settings.persona, settings.systemPrompt, settings.customPrompt)
         assistants = loadedAssistants

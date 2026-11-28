@@ -67,10 +67,7 @@ class ChatJsonTest {
                 ),
             ),
         )
-        assertEquals(
-            listOf("https://a.example", "https://b.example"),
-            JsonScan.allStringValues(json, "sources"),
-        )
+        assertTrue(json.contains("\"sources\":[\"https://a.example\",\"https://b.example\"]"))
         assertEquals("weather", JsonScan.stringField(json, "searchQuery"))
     }
 

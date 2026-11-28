@@ -204,12 +204,22 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     if (uri == null) return@rememberLauncherForActivityResult
                     scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                         val text = runCatching {
-                            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { reader ->
+                                val limit = com.littlebit.chat.data.ChatImport.MAX_TEXT_CHARS + 1
+                                val buf = CharArray(8192)
+                                val out = StringBuilder()
+                                while (out.length < limit) {
+                                    val n = reader.read(buf, 0, minOf(buf.size, limit - out.length))
+                                    if (n < 0) break
+                                    out.append(buf, 0, n)
+                                }
+                                out.toString()
+                            }
                         }.getOrNull()
-                        importStatus = if (text.isNullOrBlank()) {
-                            "Could not read that file."
-                        } else {
-                            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            importStatus = if (text.isNullOrBlank()) {
+                                "Could not read that file."
+                            } else {
                                 vm.importChat(text) ?: "Chat imported."
                             }
                         }

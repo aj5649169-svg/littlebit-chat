@@ -72,7 +72,7 @@ class ChatImportTest {
         val text = """{"chats":[{"id":"a","note":"} ] {"},{"id":"b"}]}"""
         val bodies = ChatImport.arrayBodies(text, "chats")
         assertEquals(2, bodies.size)
-        assertTrue(bodies[0].contains("}]"))
+        assertTrue(bodies[0].contains("} ] {"))
         assertTrue(bodies[1].contains("\"b\""))
     }
 
