@@ -16,7 +16,7 @@ internal fun align64(value: Int) = ((value / 64.0).roundToInt() * 64).coerceIn(6
  * A picked image/VAE/text-encoder weight. [file] is the app-private staged
  * copy handed to stable-diffusion.cpp; null means "needs staging".
  */
-internal data class Weight(val uri: Uri, val name: String, val bytes: Long, val file: File? = null) {
+data class Weight(val uri: Uri, val name: String, val bytes: Long, val file: File? = null) {
     val staged: Boolean get() = file != null
 }
 
@@ -76,7 +76,7 @@ private fun readLongLe(input: InputStream): Long {
     return value
 }
 
-internal data class Dab(val x: Float, val y: Float, val radius: Float)
+data class Dab(val x: Float, val y: Float, val radius: Float)
 
 internal fun mask(width: Int, height: Int, strokes: List<List<Dab>>): ByteArray {
     val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)

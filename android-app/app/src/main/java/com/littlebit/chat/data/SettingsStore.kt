@@ -5,6 +5,7 @@ import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 import android.content.Context
 import android.content.SharedPreferences
+import com.littlebit.chat.engine.ChatTemplate
 
 /**
  * App settings backed by SharedPreferences. Inference defaults follow the
@@ -130,6 +131,15 @@ class SettingsStore(context: Context) {
     var systemPrompt: String
         get() = prefs.getString("system_prompt", DEFAULT_SYSTEM_PROMPT) ?: DEFAULT_SYSTEM_PROMPT
         set(v) { prefs.edit().putString("system_prompt", v).apply() }
+
+    /** Selected chat template id; MODEL_DEFAULT keeps the GGUF template. */
+    var chatTemplate by label("chat_template", ChatTemplate.MODEL_DEFAULT.id)
+
+    /** User-edited template, only used when chatTemplate is CUSTOM. */
+    var customTemplate by label("custom_template", ChatTemplate.DEFAULT_CUSTOM)
+
+    /** Hard stop strings, one per line (max 8, 64 chars each). */
+    var stopStrings by label("stop_strings", "")
 
     /** Instant Reply (background speculative pre-warm). Default OFF. */
     var instantReply: Boolean

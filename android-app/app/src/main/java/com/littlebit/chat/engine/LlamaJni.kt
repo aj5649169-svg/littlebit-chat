@@ -51,6 +51,7 @@ internal object LlamaJni {
         maxTokens: Int,
         seed: Long,
         thinkingBudget: Int,
+        stopStrings: Array<String>,
         callback: LlamaEngine.TokenCallback,
     ): Int
 
@@ -70,6 +71,7 @@ internal object LlamaJni {
         maxTokens: Int,
         seed: Long,
         thinkingBudget: Int,
+        stopStrings: Array<String>,
         callback: LlamaEngine.TokenCallback,
     ): Int
 
@@ -78,6 +80,7 @@ internal object LlamaJni {
     external fun nativeBenchmarkContext(handle: Long): Long
     external fun nativeReset(handle: Long)
     external fun nativePromptSize(handle: Long, prompt: String): Int
+    external fun nativeCountTokens(handle: Long, text: String, parseSpecial: Boolean): Int
     external fun nativeStop(handle: Long)
     external fun nativeSaveKvCache(handle: Long, path: String): Int
     external fun nativeLoadKvCache(handle: Long, path: String): Int

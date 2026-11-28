@@ -44,31 +44,22 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
     val context = LocalContext.current
     val resolver = context.contentResolver
     val scope = rememberCoroutineScope()
-    val slots = remember { mutableStateListOf<Weight?>(null, null, null, null) }
-    var slot by remember { mutableIntStateOf(0) }
     var error by remember { mutableStateOf("") }
     var qwen by remember { mutableStateOf(false) }
-    var prompt by remember { mutableStateOf("") }
-    var negative by remember { mutableStateOf("") }
-    var seed by remember { mutableStateOf("-1") }
-    var steps by remember { mutableIntStateOf(20) }
-    var strength by remember { mutableFloatStateOf(.75f) }
-    var brush by remember { mutableFloatStateOf(.04f) }
-    var shape by remember { mutableStateOf(512 to 512) }
-    var source by remember { mutableStateOf<Bitmap?>(null) }
-    val strokes = remember { mutableStateListOf<List<Dab>>() }
     var stage by remember { mutableStateOf("") }
     var pending by remember { mutableStateOf<Weight?>(null) }
     var pendingSlot by remember { mutableIntStateOf(0) }
     var staging by remember { mutableStateOf(false) }
     var stageProgress by remember { mutableFloatStateOf(0f) }
-    // Fast VAE (TAESD): optional staged decoder for 1-3 s VAE decoding.
-    var taesd by remember { mutableStateOf(TaesdModel.find(ImageModelStaging.directory(context))) }
     var taesdError by remember { mutableStateOf("") }
+
+    // Persisted studio state lives on the ViewModel so navigating back never
+    // wipes the prompt or kills an active run.
+    val st = vm.studioState
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
-            val index = slot
+            val index = st.slot
             runCatching { withContext(Dispatchers.IO) { inspectWeight(resolver, uri) } }
                 .onSuccess { weight ->
                     error = ""
@@ -76,8 +67,8 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                         ImageModelStaging.findStaged(ImageModelStaging.directory(context), weight.name, weight.bytes)
                     }
                     if (existing != null) {
-                        slots[index] = weight.copy(file = existing)
-                        if (index == 0 && weight.name.contains("turbo", true)) steps = if (qwen) 8 else 4
+                        st.slots[index] = weight.copy(file = existing)
+                        if (index == 0 && weight.name.contains("turbo", true)) st.steps = if (qwen) 8 else 4
                     } else {
                         pendingSlot = index
                         pending = weight
@@ -90,10 +81,10 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
         if (uri != null) scope.launch {
             runCatching { withContext(Dispatchers.IO) { photo(resolver, uri) } }
                 .onSuccess {
-                    source = it
-                    strokes.clear()
+                    st.source = it
+                    st.strokes.clear()
                     val scale = 512.0 / maxOf(it.width, it.height)
-                    shape = align64((it.width * scale).toInt()) to align64((it.height * scale).toInt())
+                    st.shape = align64((it.width * scale).toInt()) to align64((it.height * scale).toInt())
                 }
                 .onFailure { error = it.message.orEmpty() }
         }
@@ -103,14 +94,14 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
             runCatching {
                 withContext(Dispatchers.IO) {
                     val name = resolver.query(
-                        uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null,
+                        uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null, null,
                     )?.use { if (it.moveToFirst()) it.getString(0) else null }.orEmpty()
                     val bytes = resolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L
                     TaesdModel.validate(name, bytes)?.let { throw IllegalArgumentException(it) }
                     ImageModelStaging.stage(context, uri, TaesdModel.FILE_NAME, bytes)
                 }
             }.onSuccess { file ->
-                taesd = file
+                st.taesd = file
                 vm.settings.taesdEnabled = true
                 taesdError = ""
             }.onFailure { taesdError = it.message.orEmpty() }
@@ -131,8 +122,10 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
     LaunchedEffect(vm.studioBusy) {
         while (vm.studioBusy) {
             stage = SdNative.status()
+            st.progress = stage
             delay(250)
         }
+        if (!vm.studioBusy && st.progress.isNotEmpty()) st.progress = ""
     }
 
     pending?.let { weight ->
@@ -179,8 +172,8 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                                 )
                             }
                         }.onSuccess { file ->
-                            slots[pendingSlot] = weight.copy(file = file)
-                            if (pendingSlot == 0 && weight.name.contains("turbo", true)) steps = if (qwen) 8 else 4
+                            st.slots[pendingSlot] = weight.copy(file = file)
+                            if (pendingSlot == 0 && weight.name.contains("turbo", true)) st.steps = if (qwen) 8 else 4
                             pending = null
                             error = ""
                         }.onFailure {
@@ -208,8 +201,6 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
         },
     ) { padding ->
         Column(
-            // Padding sits inside the scroll container so the top staged-model
-            // card starts below the TopAppBar and never clips under it.
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
@@ -224,8 +215,8 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                         enabled = !vm.busy,
                         onClick = {
                             qwen = mode
-                            for (i in slots.indices) slots[i] = null
-                            steps = if (mode) 8 else 20
+                            for (i in st.slots.indices) st.slots[i] = null
+                            st.steps = if (mode) 8 else 20
                         },
                         label = { Text(label) },
                     )
@@ -233,7 +224,7 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
             }
             for (i in 0 until if (qwen) 4 else 1) {
                 val label = listOf("Image model", "Text encoder", "VAE", "Vision projector (photo edits)")[i]
-                val weight = slots[i]
+                val weight = st.slots[i]
                 Card(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     shape = RoundedCornerShape(16.dp),
@@ -264,7 +255,7 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                             TextButton(
                                 enabled = !vm.busy && !staging,
                                 onClick = {
-                                    slot = i
+                                    st.slot = i
                                     picker.launch(arrayOf("*/*"))
                                 },
                             ) { Text(if (weight == null) "Select" else "Replace") }
@@ -274,7 +265,7 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                                 enabled = !vm.busy,
                                 onClick = {
                                     ImageModelStaging.delete(requireNotNull(weight.file))
-                                    slots[i] = weight.copy(file = null)
+                                    st.slots[i] = weight.copy(file = null)
                                     error = "Staged copy deleted."
                                 },
                             ) {
@@ -295,10 +286,10 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                         Column(Modifier.weight(1f)) {
                             Text("Fast VAE (TAESD)", style = MaterialTheme.typography.titleSmall)
                             Text(
-                                taesd?.let { "Staged · ${ImageModelStaging.formatBytes(it.length())}" }
+                                st.taesd?.let { "Staged · ${ImageModelStaging.formatBytes(it.length())}" }
                                     ?: "Not staged · ${TaesdModel.DISPLAY_SIZE}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (taesd != null) MaterialTheme.colorScheme.primary
+                                color = if (st.taesd != null) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -315,7 +306,7 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 6.dp),
                     )
-                    if (vm.settings.taesdEnabled && taesd == null) {
+                    if (vm.settings.taesdEnabled && st.taesd == null) {
                         Text(
                             "No taesd.safetensors staged — falling back to tiled full VAE.",
                             style = MaterialTheme.typography.bodySmall,
@@ -325,22 +316,19 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(enabled = !vm.busy, onClick = { taesdPick.launch(arrayOf("*/*")) }) {
-                            Text(if (taesd == null) "Select taesd.safetensors" else "Replace")
+                            Text(if (st.taesd == null) "Select taesd.safetensors" else "Replace")
                         }
                         TextButton(enabled = !vm.busy, onClick = {
-                            // Same ACTION_VIEW hand-off as Model Hub: the browser
-                            // downloads it, so the offline build still declares no
-                            // INTERNET permission.
                             runCatching {
                                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(TaesdModel.URL)))
                             }.onFailure {
                                 taesdError = "No browser app available. Download taesd.safetensors elsewhere and select it here."
                             }
                         }) { Text("Get taesd.safetensors (${TaesdModel.DISPLAY_SIZE})") }
-                        if (taesd != null) {
+                        if (st.taesd != null) {
                             TextButton(enabled = !vm.busy, onClick = {
-                                ImageModelStaging.delete(requireNotNull(taesd))
-                                taesd = null
+                                ImageModelStaging.delete(requireNotNull(st.taesd))
+                                st.taesd = null
                                 vm.settings.taesdEnabled = false
                             }) { Text("Delete") }
                         }
@@ -354,8 +342,8 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                     }
                 }
             }
-            val peak = (slots.filterNotNull().maxOfOrNull { it.bytes } ?: 0L) + 1024L * 1024 * 1024
-            if (slots[0] != null) {
+            val peak = (st.slots.filterNotNull().maxOfOrNull { it.bytes } ?: 0L) + 1024L * 1024 * 1024
+            if (st.slots[0] != null) {
                 FitLabel(
                     when {
                         peak > free -> "High OOM risk"
@@ -366,31 +354,31 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
             }
             Row {
                 TextButton(enabled = !vm.busy, onClick = { photoPick.launch(arrayOf("image/*")) }) { Text("Choose photo") }
-                if (source != null) {
-                    TextButton(enabled = !vm.busy, onClick = { source = null; strokes.clear() }) { Text("Remove") }
+                if (st.source != null) {
+                    TextButton(enabled = !vm.busy, onClick = { st.source = null; st.strokes.clear() }) { Text("Remove") }
                 }
             }
-            source?.let { image ->
+            st.source?.let { image ->
                 Box(Modifier.fillMaxWidth().aspectRatio(image.width.toFloat() / image.height)) {
                     Image(image.asImageBitmap(), "Input photo", Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
                     if (!qwen) {
                         Canvas(
-                            Modifier.fillMaxSize().pointerInput(brush, vm.busy) {
+                            Modifier.fillMaxSize().pointerInput(st.brush, vm.busy) {
                                 if (!vm.busy) {
                                     detectDragGestures(
-                                        onDragStart = { p -> strokes.add(listOf(Dab(p.x / size.width, p.y / size.height, brush))) },
+                                        onDragStart = { p -> st.strokes.add(listOf(Dab(p.x / size.width, p.y / size.height, st.brush))) },
                                         onDrag = { change, _ ->
                                             change.consume()
-                                            if (strokes.isNotEmpty()) {
-                                                strokes[strokes.lastIndex] = strokes.last() +
-                                                    Dab(change.position.x / size.width, change.position.y / size.height, brush)
+                                            if (st.strokes.isNotEmpty()) {
+                                                st.strokes[st.strokes.lastIndex] = st.strokes.last() +
+                                                    Dab(change.position.x / size.width, change.position.y / size.height, st.brush)
                                             }
                                         },
                                     )
                                 }
                             },
                         ) {
-                            for (stroke in strokes) {
+                            for (stroke in st.strokes) {
                                 for ((i, p) in stroke.withIndex()) {
                                     val center = Offset(p.x * size.width, p.y * size.height)
                                     val red = Color.Red.copy(alpha = .5f)
@@ -411,21 +399,21 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                 if (!qwen) {
                     Text("Brush size")
                     LittleBitSlider(
-                        value = brush,
-                        onValueChange = { brush = it },
+                        value = st.brush,
+                        onValueChange = { st.brush = it },
                         valueRange = .005f..0.14f,
-                        display = "%.3f".format(brush),
+                        display = "%.3f".format(st.brush),
                         contentDescription = "Brush size",
                     )
                     Row {
-                        TextButton(onClick = { if (strokes.isNotEmpty()) strokes.removeAt(strokes.lastIndex) }) { Text("Undo") }
-                        TextButton(onClick = strokes::clear) { Text("Clear mask") }
+                        TextButton(onClick = { if (st.strokes.isNotEmpty()) st.strokes.removeAt(st.strokes.lastIndex) }) { Text("Undo") }
+                        TextButton(onClick = st.strokes::clear) { Text("Clear mask") }
                     }
                 }
             }
-            OutlinedTextField(prompt, { prompt = it }, label = { Text("Describe the image or edit") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(negative, { negative = it }, label = { Text("Negative prompt (optional)") }, modifier = Modifier.fillMaxWidth())
-            if (source == null) {
+            OutlinedTextField(st.prompt, { st.prompt = it }, label = { Text("Describe the image or edit") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(st.negative, { st.negative = it }, label = { Text("Negative prompt (optional)") }, modifier = Modifier.fillMaxWidth())
+            if (st.source == null) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -434,35 +422,35 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     for (s in listOf(512 to 512, 512 to 768, 768 to 512, 1024 to 1024)) {
-                        FilterChip(shape == s, { shape = s }, { Text("${s.first}×${s.second}") })
+                        FilterChip(st.shape == s, { st.shape = s }, { Text("${s.first}×${s.second}") })
                     }
                 }
             }
-            Text("Steps · $steps")
+            Text("Steps · ${st.steps}")
             LittleBitSlider(
-                value = steps.toFloat(),
-                onValueChange = { steps = it.roundToInt() },
+                value = st.steps.toFloat(),
+                onValueChange = { st.steps = it.roundToInt() },
                 valueRange = 1f..40f,
                 steps = 38,
-                display = steps.toString(),
+                display = st.steps.toString(),
                 contentDescription = "Steps",
             )
-            ImageStepHint.forModel(slots[0]?.name.orEmpty(), steps)?.let { hint ->
+            ImageStepHint.forModel(st.slots.getOrNull(0)?.name.orEmpty(), st.steps)?.let { hint ->
                 Text(
                     hint,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Text("Denoise · %.2f".format(strength))
+            Text("Denoise · %.2f".format(st.strength))
             LittleBitSlider(
-                value = strength,
-                onValueChange = { strength = it },
+                value = st.strength,
+                onValueChange = { st.strength = it },
                 valueRange = 0f..1f,
-                display = "%.2f".format(strength),
+                display = "%.2f".format(st.strength),
                 contentDescription = "Denoise strength",
             )
-            OutlinedTextField(seed, { seed = it }, label = { Text("Seed (−1 for random)") }, singleLine = true)
+            OutlinedTextField(st.seed, { st.seed = it }, label = { Text("Seed (−1 for random)") }, singleLine = true)
             vm.studioNote?.let { note ->
                 Text(
                     note,
@@ -474,23 +462,21 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
                 Text(stage)
                 Button(onClick = vm::cancelImage) { Text("Cancel") }
             } else {
-                val ready = slots[0]?.file != null &&
-                    (!qwen || (slots[1]?.file != null && slots[2]?.file != null && (source == null || slots[3]?.file != null)))
+                val ready = st.slots.getOrNull(0)?.file != null &&
+                    (!qwen || (st.slots.getOrNull(1)?.file != null && st.slots.getOrNull(2)?.file != null && (st.source == null || st.slots.getOrNull(3)?.file != null)))
                 Button(
-                    enabled = !vm.busy && ready && prompt.isNotBlank() && seed.toLongOrNull() != null,
+                    enabled = !vm.busy && ready && st.prompt.isNotBlank() && st.seed.toLongOrNull() != null,
                     onClick = {
-                        val paths = List(4) { slots.getOrNull(it)?.file?.absolutePath }
-                        val input = source
-                        val mask = strokes.toList()
-                        val p = prompt
-                        val n = negative
-                        val (w, h) = shape
-                        val count = steps
-                        val denoise = strength
-                        val number = seed.toLongOrNull() ?: -1L
-                        // Only pass TAESD when the toggle is on and a staged copy exists;
-                        // otherwise the native side keeps the tiled full VAE.
-                        val taesdPath = taesd?.absolutePath?.takeIf { vm.settings.taesdEnabled }
+                        val paths = List(4) { st.slots.getOrNull(it)?.file?.absolutePath }
+                        val input = st.source
+                        val mask = st.strokes.toList()
+                        val p = st.prompt
+                        val n = st.negative
+                        val (w, h) = st.shape
+                        val count = st.steps
+                        val denoise = st.strength
+                        val number = st.seed.toLongOrNull() ?: -1L
+                        val taesdPath = st.taesd?.absolutePath?.takeIf { vm.settings.taesdEnabled }
                         vm.renderImage {
                             generate(paths, input, mask, p, n, w, h, count, denoise, number, taesdPath)
                         }

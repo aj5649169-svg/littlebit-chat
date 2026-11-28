@@ -4,6 +4,8 @@ internal object SdNative {
     init { System.loadLibrary("sd_jni") }
     external fun prepare()
     external fun status(): String
+    /** phase, step, total, requested — see [ImageProgress]. */
+    external fun progress(): IntArray
     external fun cancel()
     external fun render(files: Array<String>, prompt: String, negative: String, width: Int, height: Int,
                         steps: Int, strength: Float, seed: Long, turbo: Boolean, photo: ByteArray?, mask: ByteArray?,

@@ -29,6 +29,8 @@ import com.littlebit.chat.data.RamDialogPlan
 import com.littlebit.chat.data.NotesStore
 import com.littlebit.chat.data.SettingsStore
 import com.littlebit.chat.engine.*
+import com.littlebit.chat.studio.ImageProgress
+import com.littlebit.chat.studio.StudioState
 import com.littlebit.chat.net.CloudClient
 import com.littlebit.chat.net.CloudPreset
 import com.littlebit.chat.net.CloudRequest
@@ -137,6 +139,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Brief status line shown by Image Studio (RAM freed, cancelling, done). */
     var studioNote by mutableStateOf<String?>(null)
         private set
+
+    /** Persisted Image Studio state: navigating back never wipes the prompt or kills an active run. */
+    val studioState = StudioState()
 
     /**
      * Cancels an in-flight image generation. The native render is a blocking
@@ -1099,7 +1104,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         history.add("user" to if (fast) ThinkBlocks.withNoThink(userText, modelInfo?.architecture) else userText)
         var trimmed = false
         while (true) {
-            val prompt = engine.formatChat(system, history, thinking = !fast) + tail
+            val prompt = (if (settings.chatTemplate == ChatTemplate.MODEL_DEFAULT.id) {
+                engine.formatChat(system, history, thinking = !fast)
+            } else {
+                ChatTemplate.byId(settings.chatTemplate).render(
+                    system,
+                    history.map { (role, content) -> ChatTemplate.Turn(role, content) },
+                    settings.customTemplate,
+                )
+            }) + tail
             val size = engine.promptSize(prompt)
             if (size <= capacity - minOf(128, capacity / 8) || history.size == 1) {
                 require(size in 1..(capacity - 4)) { "This message exceeds the loaded context. Shorten it or reload with a larger context." }
@@ -1120,7 +1133,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         thinkingBudget = if (fastMode) -1 else settings.thinkingBudget.toIntOrNull() ?: -1,
         temperature = assistantTemperature ?: settings.temperature, repeatPenalty = settings.repeatPenalty,
         dryMultiplier = settings.dryMultiplier, maxTokens = maxTokens,
-        topK = settings.topK, topP = settings.topPercent / 100.0, minP = settings.minPercent / 100.0)
+        topK = settings.topK, topP = settings.topPercent / 100.0, minP = settings.minPercent / 100.0,
+        stopStrings = settings.stopStrings.lines().filter { it.isNotBlank() }.take(8),
+    )
 
     private fun updateMetrics() {
         val m = engine.metrics()

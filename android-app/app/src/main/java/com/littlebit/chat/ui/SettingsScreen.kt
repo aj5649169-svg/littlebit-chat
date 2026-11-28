@@ -364,6 +364,43 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     settings.systemPrompt = systemPrompt
                     vm.invalidateDraft()
                 }
+                val templateLabels = com.littlebit.chat.engine.ChatTemplate.entries.associateBy { it.id }
+                var templateId by remember { mutableStateOf(settings.chatTemplate) }
+                var customTemplate by remember { mutableStateOf(settings.customTemplate) }
+                LaunchedEffect(settings.chatTemplate, settings.customTemplate) {
+                    templateId = settings.chatTemplate
+                    customTemplate = settings.customTemplate
+                }
+                Choices("Chat template", templateLabels.keys.sorted().map { id ->
+                    val t = templateLabels[id]!!
+                    if (t.id == com.littlebit.chat.engine.ChatTemplate.MODEL_DEFAULT.id) "Model default" else t.label
+                }, templateLabels.entries.firstOrNull { it.key == templateId }?.value?.let {
+                    if (it.id == com.littlebit.chat.engine.ChatTemplate.MODEL_DEFAULT.id) "Model default" else it.label
+                } ?: "Model default") { label ->
+                    val id = templateLabels.entries.firstOrNull { it.value.label == label && it.value.id != com.littlebit.chat.engine.ChatTemplate.MODEL_DEFAULT.id }?.key
+                        ?: com.littlebit.chat.engine.ChatTemplate.MODEL_DEFAULT.id
+                    templateId = id
+                    settings.chatTemplate = id
+                    vm.invalidateDraft()
+                }
+                if (templateId == com.littlebit.chat.engine.ChatTemplate.CUSTOM.id) {
+                    Column {
+                        Text("Custom template", style = MaterialTheme.typography.titleSmall)
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = customTemplate,
+                            onValueChange = {
+                                customTemplate = it
+                                settings.customTemplate = it
+                                settings.chatTemplate = com.littlebit.chat.engine.ChatTemplate.CUSTOM.id
+                                vm.invalidateDraft()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 3,
+                            label = { Text("{{system}}, {{history}}, {{prompt}} placeholders") },
+                        )
+                    }
+                }
                 Column {
                     Text("System Prompt", style = MaterialTheme.typography.titleSmall)
                     Spacer(Modifier.height(6.dp))
@@ -479,6 +516,16 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     }
                 }
                 item { Choices("Output token limit", com.littlebit.chat.engine.outputLimits.map { it.toString() }, settings.maxTokens.toString()) { settings.maxTokens = it.toInt() } }
+                item { SettingPanel("Stop strings") {
+                    var stopText by remember { mutableStateOf(settings.stopStrings) }
+                    OutlinedTextField(
+                        value = stopText,
+                        onValueChange = { stopText = it; settings.stopStrings = it },
+                        label = { Text("One hard stop per line (max 8 · 64 chars each; enforced in the generation loop)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3,
+                    )
+                } }
             }
             item(key = "footer") { Spacer(Modifier.height(16.dp)) }
         }
