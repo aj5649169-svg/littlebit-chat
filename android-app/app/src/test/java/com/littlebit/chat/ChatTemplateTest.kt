@@ -7,8 +7,11 @@ import org.junit.Test
 class ChatTemplateTest {
 
     @Test fun modelDefaultThrows() {
-        assertFailsWith<UnsupportedOperationException> {
+        try {
             ChatTemplate.MODEL_DEFAULT.render("sys", emptyList())
+            fail("Expected UnsupportedOperationException")
+        } catch (e: UnsupportedOperationException) {
+            // expected
         }
     }
 
