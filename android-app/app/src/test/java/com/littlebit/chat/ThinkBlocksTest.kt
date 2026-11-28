@@ -82,4 +82,20 @@ class ThinkBlocksTest {
         assertTrue(ThinkBlocks.isSentenceComplete("How are you?"))
         assertFalse(ThinkBlocks.isSentenceComplete("How are"))
     }
+
+    @Test fun normalizeChannelsFoldsChannelTokensIntoShortTags() {
+        val open = ThinkBlocks.SHORT_OPEN
+        val close = ThinkBlocks.SHORT_CLOSE
+        assertEquals(open + "plan" + close, ThinkBlocks.normalizeChannels("<|channel>thought\nplan<channel|>"))
+        assertEquals(open + "reason" + close, ThinkBlocks.normalizeChannels("<|channel>analysis\nreason<channel|>"))
+        assertEquals(open + "x" + close, ThinkBlocks.normalizeChannels("<|channel>x<channel|>"))
+        assertEquals("", ThinkBlocks.normalizeChannels(""))
+    }
+
+    @Test fun stripRemovesNormalizedChannelBlocks() {
+        val open = ThinkBlocks.SHORT_OPEN
+        val close = ThinkBlocks.SHORT_CLOSE
+        assertEquals("A B", ThinkBlocks.strip("A <|channel>thought\nx<channel|> B").replace(Regex("\\s+"), " "))
+        assertEquals("plain", ThinkBlocks.strip("plain"))
+    }
 }

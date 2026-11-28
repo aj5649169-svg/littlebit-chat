@@ -18,6 +18,8 @@ data class SamplingParams(
     val maxTokens: Int = 1024,
     val thinkingBudget: Int = -1,
     val seed: Long = -1,             // <0 = random
+    /** Hard stops enforced on the decoded text stream (max 8, 64 chars each). */
+    val stopStrings: List<String> = emptyList(),
 )
 
 data class GenerateResult(
@@ -50,6 +52,9 @@ interface LlmEngine {
     fun continueGenerate(params: SamplingParams, onToken: (String) -> Unit): GenerateResult
     fun formatChat(systemPrompt: String, messages: List<Pair<String, String>>, thinking: Boolean = false): String
     fun promptSize(prompt: String): Int
+
+    /** Real token count for [text]; [parseSpecial] treats special tokens as one token each. */
+    fun countTokens(text: String, parseSpecial: Boolean = true): Int
     fun metrics(): DoubleArray
     fun benchmarkContext(): LlmEngine
     fun setThreads(threads: Int)

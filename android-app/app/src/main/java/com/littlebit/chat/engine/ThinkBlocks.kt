@@ -35,8 +35,25 @@ object ThinkBlocks {
      * Remove reasoning blocks from a stored assistant message before it is
      * formatted into the next turn's prompt.
      */
-    fun strip(text: String): String =
-        OPEN_TO_END.replace(CLOSED.replace(text, ""), "").trim()
+    fun strip(text: String): String {
+        val normalized = normalizeChannels(text)
+        return OPEN_TO_END.replace(CLOSED.replace(normalized, ""), "").trim()
+    }
+
+    /**
+     * Gemma 4 / Qwen3 emit channel control tokens instead of literal tags:
+     * `<|channel>thought\n…<channel|>`. Fold them into the exact same
+     * [SHORT_OPEN]/[SHORT_CLOSE] strings the parser and `llama_jni.cpp` use, so
+     * the tags can never drift into a malformed `"<thinkthought"`.
+     */
+    fun normalizeChannels(text: String): String {
+        if (text.isEmpty()) return text
+        return text
+            .replace("<|channel>thought", SHORT_OPEN)
+            .replace("<|channel>analysis", SHORT_OPEN)
+            .replace("<|channel>", SHORT_OPEN)
+            .replace("<channel|>", SHORT_CLOSE)
+    }
 
     class Split(val think: String?, val answer: String)
 

@@ -73,6 +73,9 @@ class LlamaEngine(diagnosticPath: String? = null) : LlmEngine {
     override fun reset() = LlamaJni.nativeReset(handle)
     override fun promptSize(prompt: String) = LlamaJni.nativePromptSize(handle, prompt)
 
+    override fun countTokens(text: String, parseSpecial: Boolean = true) =
+        if (handle == 0L) 0 else LlamaJni.nativeCountTokens(handle, text, parseSpecial)
+
     override fun setThreads(threads: Int) {
         if (handle != 0L) LlamaJni.nativeSetThreads(handle, threads)
     }
@@ -173,17 +176,18 @@ class LlamaEngine(diagnosticPath: String? = null) : LlmEngine {
                     error = message
                 }
             }
+            val stopArray = params.stopStrings.toTypedArray()
             val status = if (prompt == null) {
                 LlamaJni.nativeContinueGenerate(
                     handle,
                     params.temperature, params.topK, params.topP, params.minP, params.repeatPenalty, params.dryMultiplier,
-                    params.maxTokens, params.seed, params.thinkingBudget, cb,
+                    params.maxTokens, params.seed, params.thinkingBudget, stopArray, cb,
                 )
             } else {
                 LlamaJni.nativeGenerate(
                     handle, prompt,
                     params.temperature, params.topK, params.topP, params.minP, params.repeatPenalty, params.dryMultiplier,
-                    params.maxTokens, params.seed, params.thinkingBudget, cb,
+                    params.maxTokens, params.seed, params.thinkingBudget, stopArray, cb,
                 )
             }
             val m = metrics()

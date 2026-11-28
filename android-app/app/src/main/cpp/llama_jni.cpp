@@ -282,23 +282,93 @@ bool deliverUtf8(JNIEnv * env, jobject callback, const std::string & bytes) {
     return !failed;
 }
 
-bool appendUtf8Piece(JNIEnv * env, jobject callback, std::string & pending,
-                     const std::string & piece) {
+// Mirrors engine/StopStrings.kt byte-for-byte: holds back the final
+// (longestStop - 1) bytes so a stop string split across token pieces can still
+// be recognised, then releases everything that cannot be a stop prefix.
+struct StopFilter {
+    std::vector<std::string> stops; // longest first, de-duped, non-empty
+    std::string holdback;
+    bool matched = false;
+    std::string matchedOn;
+
+    explicit StopFilter(JNIEnv * env, jobjectArray jstops) {
+        if (!jstops) return;
+        jsize n = env->GetArrayLength(jstops);
+        std::vector<std::string> tmp;
+        tmp.reserve(static_cast<size_t>(n));
+        for (jsize i = 0; i < n && i < 8; ++i) {
+            jstring s = static_cast<jstring>(env->GetObjectArrayElement(jstops, i));
+            if (!s) continue;
+            tmp.push_back(toStdString(env, s));
+            env->DeleteLocalRef(s);
+        }
+        std::sort(tmp.begin(), tmp.end());
+        tmp.erase(std::unique(tmp.begin(), tmp.end()), tmp.end());
+        tmp.erase(std::remove_if(tmp.begin(), tmp.end(),
+                    [](const std::string & s) { return s.empty(); }), tmp.end());
+        std::sort(tmp.begin(), tmp.end(),
+                  [](const std::string & a, const std::string & b) {
+                      return a.size() > b.size();
+                  });
+        stops = std::move(tmp);
+    }
+
+    std::string feed(const std::string & piece) {
+        if (matched) return "";
+        if (stops.empty()) return piece;
+        holdback.append(piece);
+        size_t bestAt = std::string::npos;
+        std::string bestStop;
+        for (const auto & stop : stops) {
+            size_t at = holdback.find(stop);
+            if (at != std::string::npos &&
+                (bestAt == std::string::npos || at < bestAt)) {
+                bestAt = at;
+                bestStop = stop;
+            }
+        }
+        if (bestAt != std::string::npos) {
+            matched = true;
+            matchedOn = bestStop;
+            std::string out = holdback.substr(0, bestAt);
+            holdback.clear();
+            return out;
+        }
+        size_t keep = stops.front().size() - 1;
+        if (holdback.size() <= keep) return "";
+        size_t cut = holdback.size() - keep;
+        std::string out = holdback.substr(0, cut);
+        holdback.erase(0, cut);
+        return out;
+    }
+
+    std::string finish() {
+        if (matched) return "";
+        std::string out = holdback;
+        holdback.clear();
+        return out;
+    }
+};
+
+// Return the complete UTF-8 prefix instead of delivering it, so the caller can
+// run it through the StopFilter before delivery.
+std::string takeUtf8Piece(JNIEnv * env, jobject callback, std::string & pending,
+                          const std::string & piece) {
     pending.append(piece);
     const size_t complete = completeUtf8PrefixLength(pending);
-    if (complete == 0) return true;
+    if (complete == 0) return "";
     const std::string ready = pending.substr(0, complete);
     pending.erase(0, complete);
-    return deliverUtf8(env, callback, ready);
+    return ready;
 }
 
-bool flushUtf8Tail(JNIEnv * env, jobject callback, std::string & pending) {
-    if (pending.empty()) return true;
+std::string takeUtf8Tail(JNIEnv * env, jobject callback, std::string & pending) {
+    if (pending.empty()) return "";
     const size_t complete = completeUtf8PrefixLength(pending);
     std::string ready = pending.substr(0, complete);
     if (complete < pending.size()) ready.append("\xEF\xBF\xBD");
     pending.clear();
-    return deliverUtf8(env, callback, ready);
+    return ready;
 }
 
 bool hasVulkanComputeDevice() {
@@ -443,7 +513,8 @@ bool draftGuesses(NativeEngine * target, llama_token confirmed, int limit,
 }
 
 int runSamplingLoop(JNIEnv * env, NativeEngine * e, jobject cb,
-                    llama_sampler * chain, jint max_tokens, jint budget) {
+                    llama_sampler * chain, jint max_tokens, jint budget,
+                    StopFilter * stopFilter) {
     const int n_ctx   = static_cast<int>(llama_n_ctx(e->ctx));
     const int n_vocab = static_cast<int>(llama_vocab_n_tokens(e->vocab));
 
@@ -507,9 +578,15 @@ int runSamplingLoop(JNIEnv * env, NativeEngine * e, jobject cb,
         }
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         e->decode_rate = seconds > 0 ? (n_gen + 1) / seconds : 0;
-        if (!piece.empty() && !appendUtf8Piece(env, cb, e->pending_utf8, piece)) {
-            status = -1;
-            break;
+        if (!piece.empty()) {
+            std::string ready = takeUtf8Piece(env, cb, e->pending_utf8, piece);
+            if (!ready.empty()) {
+                std::string safe = stopFilter ? stopFilter->feed(ready) : ready;
+                if (!safe.empty() && !deliverUtf8(env, cb, safe)) {
+                    status = -1;
+                    break;
+                }
+            }
         }
         n_gen++;
 
@@ -551,7 +628,15 @@ int runSamplingLoop(JNIEnv * env, NativeEngine * e, jobject cb,
             status = -1;
         }
     }
-    if (reachedEog && !flushUtf8Tail(env, cb, e->pending_utf8)) status = -1;
+    if (reachedEog) {
+        std::string tail = takeUtf8Tail(env, cb, e->pending_utf8);
+        if (!tail.empty()) {
+            std::string safe = stopFilter ? stopFilter->feed(tail) : tail;
+            if (!safe.empty() && !deliverUtf8(env, cb, safe)) status = -1;
+        }
+        std::string flushed = stopFilter ? stopFilter->finish() : "";
+        if (!flushed.empty() && !deliverUtf8(env, cb, flushed)) status = -1;
+    }
 
     const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     e->gen_ms = elapsed * 1000.0;
@@ -864,7 +949,7 @@ extern "C" JNIEXPORT jint JNICALL
 Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
         JNIEnv * env, jobject, jlong handle, jstring jprompt,
         jdouble temp, jint top_k, jdouble top_p, jdouble min_p, jdouble repeat_penalty, jdouble dry_multiplier,
-        jint max_tokens, jlong seed, jint budget, jobject jcallback) {
+        jint max_tokens, jlong seed, jint budget, jobjectArray jstopStrings, jobject jcallback) {
     auto * e = reinterpret_cast<NativeEngine *>(handle);
     if (e == nullptr || e->ctx == nullptr) {
         throwIllegalState(env, "no model loaded");
@@ -874,6 +959,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
         throwIllegalState(env, "callback is null");
         return -1;
     }
+    StopFilter stopFilter(env, jstopStrings);
     jobject cb = env->NewGlobalRef(jcallback);
     if (cb == nullptr) { if (env->ExceptionCheck()) env->ExceptionClear(); throwIllegalState(env, "could not retain generation callback"); return -1; }
 
@@ -1018,7 +1104,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
         }
         int status = 0;
         if (!failed && !e->stop.load()) {
-            status = runSamplingLoop(env, e, cb, chain, max_tokens, budget);
+            status = runSamplingLoop(env, e, cb, chain, max_tokens, budget, &stopFilter);
         }
         if (chain != nullptr) { llama_sampler_free(chain); chain = nullptr; }
 
@@ -1038,7 +1124,7 @@ extern "C" JNIEXPORT jint JNICALL
 Java_com_littlebit_chat_engine_LlamaJni_nativeContinueGenerate(
         JNIEnv * env, jobject, jlong handle,
         jdouble temp, jint top_k, jdouble top_p, jdouble min_p, jdouble repeat_penalty, jdouble dry_multiplier,
-        jint max_tokens, jlong seed, jint budget, jobject jcallback) {
+        jint max_tokens, jlong seed, jint budget, jobjectArray jstopStrings, jobject jcallback) {
     auto * e = reinterpret_cast<NativeEngine *>(handle);
     if (e == nullptr || e->ctx == nullptr) {
         throwIllegalState(env, "no model loaded");
@@ -1048,6 +1134,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeContinueGenerate(
         throwIllegalState(env, "callback is null");
         return -1;
     }
+    StopFilter stopFilter(env, jstopStrings);
     jobject cb = env->NewGlobalRef(jcallback);
     if (cb == nullptr) {
         if (env->ExceptionCheck()) env->ExceptionClear();
@@ -1076,7 +1163,7 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeContinueGenerate(
         llama_sampler * chain = buildSampler(e->vocab, n_vocab, opts);
         if (chain == nullptr) { env->DeleteGlobalRef(cb); throwIllegalState(env, "could not create sampler"); return -1; }
 
-        const int status = runSamplingLoop(env, e, cb, chain, max_tokens, budget);
+        const int status = runSamplingLoop(env, e, cb, chain, max_tokens, budget, &stopFilter);
         if (chain != nullptr) { llama_sampler_free(chain); chain = nullptr; }
         env->DeleteGlobalRef(cb);
 
@@ -1188,6 +1275,15 @@ Java_com_littlebit_chat_engine_LlamaJni_nativePromptSize(JNIEnv * env, jobject, 
     auto * e = reinterpret_cast<NativeEngine *>(handle);
     const auto text = toStdString(env, prompt);
     return -llama_tokenize(e->vocab, text.data(), text.size(), nullptr, 0, false, true);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_littlebit_chat_engine_LlamaJni_nativeCountTokens(JNIEnv * env, jobject, jlong handle, jstring jtext, jboolean parseSpecial) {
+    auto * e = reinterpret_cast<NativeEngine *>(handle);
+    if (e == nullptr || e->vocab == nullptr) return 0;
+    const auto text = toStdString(env, jtext);
+    if (text.empty()) return 0;
+    return -llama_tokenize(e->vocab, text.data(), static_cast<int32_t>(text.size()), nullptr, 0, false, parseSpecial);
 }
 
 extern "C" JNIEXPORT jdoubleArray JNICALL

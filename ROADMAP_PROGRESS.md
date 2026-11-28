@@ -1,24 +1,41 @@
 # Roadmap Progress
 
 Strict one-version-at-a-time delivery. Each version gets its own branch from
-`origin/main`, its own `versionName`/`versionCode` bump, its own PR, a 100%
-green GitHub Actions run, and a clean merge before the next version starts.
+`origin/main`, its own `versionName`/`versionCode` bump, its own PR, a 100% green
+GitHub Actions run, and a clean merge before the next version starts.
 
-| Phase | Branch | Version | Status | PR | Merged `main` SHA |
+## Track split (approved)
+
+- **Track A — `v1.3.3` … `v1.3.9` (OpenCode):** backend/engine/storage/core
+  features plus **minimal functional UI hooks** only (one control in an existing
+  settings panel or one label in an existing screen). Full pure-JVM unit tests.
+- **Track B — `v1.4.0` (Antigravity):** pure flagship Compose/M3 UI overhaul.
+  Zero JNI changes, zero SQLite schema rewrites, zero new Gradle dependencies.
+
+| Phase | Branch | Version | Code | Owner | Status |
 | --- | --- | --- | --- | --- | --- |
-| 0 | `chore/skills-setup` | — | **merged** | [#7](https://github.com/aj5649169-svg/littlebit-chat/pull/7) | `9c1e9be489e994011786faf6c555323b9e994620` |
-| 1 | `release/v1.3.2-trust-patch` | 1.3.2 | PR open, CI running | [#8](https://github.com/aj5649169-svg/littlebit-chat/pull/8) | — |
-| 2 | `release/v1.4.0-chatterui-core` | 1.4.0 | started (stacked, unpushed) | — | — |
-| 3 | `release/v1.4.1-multimodal` | 1.4.1 | not started | — | — |
-| 4 | `release/v1.5.0-breadth` | 1.5.0 | not started | — | — |
+| 0 | `chore/skills-setup` | — | — | OpenCode | **merged** (#7, `9c1e9be`) |
+| 1 | `release/v1.3.2-trust-patch` | 1.3.2 | 14 | OpenCode | **merged** (#8, `c0cae93`) |
+| 2 | `release/v1.3.3-studio-templates` | 1.3.3 | 15 | OpenCode | **in progress** |
+| 3 | `release/v1.3.4-sampler-suite` | 1.3.4 | 16 | OpenCode | not started |
+| 4 | `release/v1.3.5-sqlite-storage` | 1.3.5 | 17 | OpenCode | not started |
+| 5 | `release/v1.3.6-variants-summaries` | 1.3.6 | 18 | OpenCode | not started |
+| 6 | `release/v1.3.7-character-cards` | 1.3.7 | 19 | OpenCode | not started |
+| 7 | `release/v1.3.8-lorebooks-prompt` | 1.3.8 | 20 | OpenCode | not started |
+| 8 | `release/v1.3.9-perf-contracts` | 1.3.9 | 21 | OpenCode | not started |
+| 9 | `release/v1.4.0-ui-overhaul` | 1.4.0 | 22 | **Antigravity** | not started |
+
+`versionCode` map: 14→1.3.2, **15→1.3.3**, 16→1.3.4, 17→1.3.5, 18→1.3.6,
+19→1.3.7, 20→1.3.8, 21→1.3.9, 22→1.4.0.
 
 ## Baseline
 
 - `main` before Phase 0: `b1d8e8af79290c36b6d9a35bf2f7e374a79d8ff8`
 - `main` after Phase 0: `9c1e9be489e994011786faf6c555323b9e994620`
-- PR #6 (`fix/v1.3.1-ram-guard-and-image-studio`) was already merged before
-  Phase 0 began.
-- `v1.3.1` shipped `versionCode = 13`.
+- `main` after v1.3.2 (PR #8): `c0cae93` — `versionCode = 14`,
+  `versionName = "1.3.2"`.
+- `third_party/llama.cpp` pinned at `6aee508`; `stable-diffusion.cpp` pinned at
+  `2988060`. `scripts/apply-patches.sh` is never modified.
 
 ## Phase 0 — skills setup (merged, no app code)
 
@@ -33,12 +50,10 @@ green GitHub Actions run, and a clean merge before the next version starts.
 All skill directories contain `.md` files only. `skills-lock.json` records the
 upstream commits for reproducible reinstall.
 
-## Version 1 — v1.3.2 "Trust & Surface Unfair Advantages" (PR #8)
+## Phase 1 — v1.3.2 "Trust & Surface Unfair Advantages" (merged)
 
-Branch `release/v1.3.2-trust-patch`, `versionName = 1.3.2`, `versionCode = 14`,
-head `badd83176335f2f8cafd11a7c1747afe7a94d7a1`.
-
-Shipped in the PR:
+Branch `release/v1.3.2-trust-patch`, `versionCode = 14`. Merged as PR #8,
+merge commit `c0cae93`.
 
 1. Model Hub ARM `Q4_0` online-repacking guidance.
 2. LittleBit `Q1_0` demoted to **Advanced · conversion** (no prebuilt file).
@@ -50,53 +65,101 @@ Shipped in the PR:
 7. **Privacy & permissions** row reading the install's real permissions.
 8. 19 new JVM tests (`ChatBudgetTest`, `ChatJsonTest`, `ChatImportTest`).
 
-Status: GitHub Actions run
-[46065331219](https://github.com/aj5649169-svg/littlebit-chat/actions/runs/46065331219)
-reached **Build optimized release APK** with every earlier step green. Not yet
-merged — merge only after the run reports `success`.
+## Phase 2 — v1.3.3 "Image Studio correctness + prompt/engine seams" (code 15)
 
-## Version 2 — v1.4.0 "ChatterUI-Killer Core"
+Live v1.3.2 device bugs fixed here:
 
-Branch `release/v1.4.0-chatterui-core`, stacked on the v1.3.2 head. Do **not**
-push or open its PR until PR #8 is merged and this branch is rebased onto
-`origin/main`.
+- **`Step 1 / 686` when Steps = 1.** `stable-diffusion.cpp@2988060` drives one
+  global `sd_progress_cb_t` from two unrelated producers: tensor loading
+  (`pretty_bytes_progress`, ~686 tensors for an SD1.5 checkpoint) and sampling
+  steps. `sd_jni.cpp` formatted every callback as `"Step n / total"`. Fix:
+  atomic `phase/step/total/requested`, phase-aware labels, denominator always
+  the requested step count.
+- **Hang on `Decoding VAE…` / freeze on `Cancelling…`.** `n == total` was
+  treated as VAE for the *loading* callback, and `cancel()` was a no-op while no
+  context existed yet. Fix: explicit phase transitions, cancel flag checked
+  before/after `new_sd_ctx`, honest "Stopping after the current step" text.
+- **`-inpainting` checkpoint without a photo + mask** froze the run. Fix: C++
+  guard throws a readable message; Kotlin mirrors it in `ImageModelGuard` and
+  the Generate button explains the requirement.
+- **Prompt lost on back-navigation during a run.** Prompt/negative/seed/steps/
+  strength/brush/shape/slots move from `remember` into `StudioState` owned by
+  `ChatViewModel`; leaving the screen no longer cancels the render.
 
-Already written on that branch (commit `6b849f4`):
+Also shipped in 1.3.3:
 
-- `engine/ChatTemplate.kt` — ChatML, Llama 3, Mistral `[INST]`, Gemma, Alpaca,
-  Vicuna, a `MODEL_DEFAULT` sentinel that keeps using the GGUF template, a
-  user-editable `CUSTOM`, `byId`, and `suggestedFor(architecture)`.
-- `ChatTemplateTest.kt` — 10 tests covering exact rendered strings.
+- `engine/ChatTemplate.kt` written **fresh** (ChatML, Llama 3, Mistral `[INST]`,
+  Gemma, Alpaca, Vicuna, `MODEL_DEFAULT` sentinel, user-editable `CUSTOM`,
+  `byId`, `suggestedFor(architecture)`). The stale `6b849f4` sandbox commit is
+  **not** cherry-picked.
+- `engine/StopStrings.kt` + native `StopFilter` in `runSamplingLoop`
+  (byte-prefix tail holdback, ≤8 stops × 64 chars).
+- `nativeCountTokens(text, parseSpecial)`; `nativePromptSize` kept as
+  `parseSpecial = true`.
+- Gemma 4 / Qwen3 thinking-channel normalization, reusing
+  `ThinkBlocks.SHORT_OPEN` / `SHORT_CLOSE` so the Kotlin and C++ tags can never
+  drift (`<`+`think`+`>` and `<`+`/think`+`>`).
+- Settings → *Persona & Prompt*: template selector + custom template.
+  Settings → *Advanced*: stop strings, one per line.
+- Tests: `ImageProgressTest`, `ImageModelGuardTest`, `ChatTemplateTest`,
+  `StopStringsTest`, `ThinkBlocksTest` additions.
 
-Confirmed against the pinned `6aee508` `llama.h` (read-only, no local
-submodule needed):
+## Phase 3 — v1.3.4 "Full sampler suite" (code 16)
 
-- `llama_chat_apply_template(tmpl, …)` accepts a **custom template string**, and
-  `llama_chat_builtin_templates()` enumerates the built-ins.
-- Available samplers: `init_xtc`, `init_top_n_sigma`, `init_typical`,
-  `init_temp_ext`, `init_mirostat_v2`, `init_grammar`, `init_logit_bias`,
-  `init_dry`.
-- There is **no stop-string sampler** in the public API — stop strings must be
-  enforced in our own generation loop (`nativeGenerate`), not by a llama.cpp
-  sampler.
+Fixed 16-slot `jdoubleArray` sampler contract (index map documented), canonical
+chain order: penalties → DRY → top_k → typical → top_n_sigma → top_p → min_p →
+XTC → temp_ext → mirostat_v2/dist. `engine/SamplerConfig.kt` (pure) for
+round-trip + clamping; mirostat mutually exclusive with top_p/min_p. One
+"Sampler suite" group in Advanced settings. **Defaults reproduce v1.3.3 output
+exactly.**
 
-Remaining for v1.4.0: stop strings + full sampler wiring (JNI signature change,
-atomic with the Kotlin and UI sides), Character Cards V2, Lorebooks, Author's
-Note at depth, `SQLiteOpenHelper` storage v2, swipe variants, chat summaries.
+## Phase 4 — v1.3.5 "SQLite storage" (code 17)
 
-## Version 3 — v1.4.1 "Multimodal"
+`SQLiteOpenHelper` + WAL (`synchronous=NORMAL`): `chats`, `messages`,
+`sources`, index `(chat_id, ordinal)`. Migration parses `chats.json` in one
+transaction, then renames to `chats.json.bak` (kept until 1.3.6 ships).
+Pagination `page(chatId, beforeOrdinal, 50)`; `ChatSession.messages` stays a
+`MutableList` so the UI is untouched.
 
-Chat-time `mmproj` vision, offline `SpeechRecognizer` STT.
+## Phase 5 — v1.3.6 "Variants + summaries" (code 18)
 
-## Version 4 — v1.5.0 "Breadth"
+`ChatMessage.id`, `variants`, `activeVariant`; DB migration v2; regenerate →
+add variant; swipe hook on the last assistant row (keyed by `message.id`).
+`ChatSummary` auto-summarises at 80% of context and replaces trimmed turns.
 
-KoboldCPP / Anthropic / custom API templates (standard only), zero-dependency
-BM25 document RAG, i18n foundation.
+## Phase 6 — v1.3.7 "Character Cards V2 + links" (code 19)
+
+V2/V1 card parsing, PNG `tEXt`/`chara` chunks, macros, bulk import
+(SillyTavern JSONL, OpenAI conversations tree → linear). **Character links store
+optional `templateId`, `samplerPresetId` and `modelUri` alongside
+`linkedCharacterId`, so switching character can auto-apply the chat template,
+sampler preset and model.**
+
+## Phase 7 — v1.3.8 "Lorebooks + Author's Note" (code 20)
+
+`Lorebook`, `LoreScanner` (keyword + recursive, depth ≤ 3, token budget by
+`insertion_order`), `PromptAssembler` becomes the single prompt path. The KV
+cache prompt hash is computed from the **assembled** prompt, not raw messages.
+
+## Phase 8 — v1.3.9 "Perf, estimator, PROCESS_TEXT, state contracts" (code 21)
+
+Single-pass `MarkdownText` scanner with per-line memoization + strikethrough /
+nested lists / task lists / autolinks; `TokenEstimator` + debounced composer
+counter; `SharedIntents.extract(...)` fixing `ACTION_PROCESS_TEXT` and
+`onNewIntent`/`setIntent`; `ChatUiState` + `ChatAction` + `StateFlow` derived
+from existing snapshot state (no behaviour change).
+
+## Phase 9 — v1.4.0 "UI overhaul" (code 22, Antigravity, UI only)
+
+Pure flagship Compose/M3 pass over Chat, History drawer, Model Hub, Settings,
+Image Studio, Assistants/Characters, Lorebook editor and Prompt inspector.
+Every screen reads `ChatUiState`/`StudioState` and dispatches `ChatAction`; no
+composable touches `ChatViewModel` fields directly, no JNI, no SQL, no schema
+change. Deliverable: `docs/handoff/v1.4.0-ui-spec.md` (tokens, states, actions,
+empty/loading/error per screen, 48 dp targets, M3 semantic roles).
 
 ## Next action
 
-1. Wait for run 46065331219 to finish. If `success`, merge PR #8 and record its
-   merge SHA here.
-2. If `failure`, fix only the reported failure on `release/v1.3.2-trust-patch`.
-3. Rebase `release/v1.4.0-chatterui-core` onto the merged `main`, then continue
-   v1.4.0.
+1. Finish `release/v1.3.3-studio-templates`, open PR to `main`, wait for a
+   green GitHub Actions run, merge, record the merge SHA here.
+2. Start `release/v1.3.4-sampler-suite` from the merged `main`.
