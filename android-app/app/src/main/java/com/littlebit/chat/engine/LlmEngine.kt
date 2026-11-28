@@ -9,15 +9,10 @@ data class ModelInfo(
 )
 
 data class SamplingParams(
-    val temperature: Double = 0.7,
-    val topP: Double = 0.90,
-    val minP: Double = 0.05,
-    val topK: Int = 40,               // 0 = disabled
-    val repeatPenalty: Double = 1.1,
-    val dryMultiplier: Double = 0.0, // 0 = disabled
+    /** Complete local sampler configuration serialized through the fixed JNI ABI. */
+    val sampler: SamplerConfig = SamplerConfig.DEFAULT,
     val maxTokens: Int = 1024,
     val thinkingBudget: Int = -1,
-    val seed: Long = -1,             // <0 = random
     /** Hard stops enforced on the decoded text stream (max 8, 64 chars each). */
     val stopStrings: List<String> = emptyList(),
 )

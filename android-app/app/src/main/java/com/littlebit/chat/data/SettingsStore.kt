@@ -6,6 +6,8 @@ import kotlin.reflect.KProperty
 import android.content.Context
 import android.content.SharedPreferences
 import com.littlebit.chat.engine.ChatTemplate
+import com.littlebit.chat.engine.SamplerConfig
+import kotlin.math.roundToInt
 
 /**
  * App settings backed by SharedPreferences. Inference defaults follow the
@@ -26,10 +28,72 @@ class SettingsStore(context: Context) {
                 "(such as today's weather, live scores, or breaking news)."
         const val DEFAULT_SYSTEM_PROMPT =
             "You are LittleBit Chat, a helpful on-device AI assistant. Be concise and accurate. $OFFLINE"
+
+        private const val KEY_TEMPERATURE = "temperature"
+        private const val KEY_TOP_K = "top_k"
+        private const val KEY_TOP_P_PERCENT = "top_p_percent"
+        private const val KEY_MIN_P_PERCENT = "min_p_percent"
+        private const val KEY_REPEAT_PENALTY = "repeat_penalty"
+        private const val KEY_PENALTY_LAST_N = "penalty_last_n"
+        private const val KEY_FREQUENCY_PENALTY = "frequency_penalty"
+        private const val KEY_PRESENCE_PENALTY = "presence_penalty"
+        private const val KEY_DRY_MULTIPLIER = "dry_multiplier"
+        private const val KEY_DRY_BASE = "dry_base"
+        private const val KEY_DRY_ALLOWED_LENGTH = "dry_allowed_length"
+        private const val KEY_DRY_PENALTY_LAST_N = "dry_penalty_last_n"
+        private const val KEY_XTC_PROBABILITY = "xtc_probability"
+        private const val KEY_XTC_THRESHOLD = "xtc_threshold"
+        private const val KEY_TOP_N_SIGMA = "top_n_sigma"
+        private const val KEY_TYPICAL_P = "typical_p"
+        private const val KEY_DYNATEMP_RANGE = "dynatemp_range"
+        private const val KEY_DYNATEMP_EXPONENT = "dynatemp_exponent"
+        private const val KEY_MIROSTAT_ENABLED = "mirostat_enabled"
+        private const val KEY_MIROSTAT_TAU = "mirostat_tau"
+        private const val KEY_MIROSTAT_ETA = "mirostat_eta"
+        private const val KEY_SAMPLER_SEED = "sampler_seed"
     }
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences("littlebit_settings", Context.MODE_PRIVATE)
+
+    private val samplerState = mutableStateOf(readSamplerConfig())
+
+    /** Complete local sampler suite, stored as one atomic preference update. */
+    var samplerConfig: SamplerConfig
+        get() = samplerState.value
+        set(value) {
+            val safe = value.clamped()
+            prefs.edit()
+                .putSamplerDouble(KEY_TEMPERATURE, safe.temperature)
+                .putInt(KEY_TOP_K, safe.topK)
+                .putSamplerDouble(KEY_TOP_P_PERCENT, safe.topP)
+                .putSamplerDouble(KEY_MIN_P_PERCENT, safe.minP)
+                .putSamplerDouble(KEY_REPEAT_PENALTY, safe.repeatPenalty)
+                .putInt(KEY_PENALTY_LAST_N, safe.penaltyLastN)
+                .putSamplerDouble(KEY_FREQUENCY_PENALTY, safe.frequencyPenalty)
+                .putSamplerDouble(KEY_PRESENCE_PENALTY, safe.presencePenalty)
+                .putSamplerDouble(KEY_DRY_MULTIPLIER, safe.dryMultiplier)
+                .putSamplerDouble(KEY_DRY_BASE, safe.dryBase)
+                .putInt(KEY_DRY_ALLOWED_LENGTH, safe.dryAllowedLength)
+                .putInt(KEY_DRY_PENALTY_LAST_N, safe.dryPenaltyLastN)
+                .putSamplerDouble(KEY_XTC_PROBABILITY, safe.xtcProbability)
+                .putSamplerDouble(KEY_XTC_THRESHOLD, safe.xtcThreshold)
+                .putSamplerDouble(KEY_TOP_N_SIGMA, safe.topNSigma)
+                .putSamplerDouble(KEY_TYPICAL_P, safe.typicalP)
+                .putSamplerDouble(KEY_DYNATEMP_RANGE, safe.dynatempRange)
+                .putSamplerDouble(KEY_DYNATEMP_EXPONENT, safe.dynatempExponent)
+                .putBoolean(KEY_MIROSTAT_ENABLED, safe.mirostatEnabled)
+                .putSamplerDouble(KEY_MIROSTAT_TAU, safe.mirostatTau)
+                .putSamplerDouble(KEY_MIROSTAT_ETA, safe.mirostatEta)
+                .putLong(KEY_SAMPLER_SEED, safe.seed)
+                .apply()
+            samplerState.value = safe
+        }
+
+    private fun SharedPreferences.Editor.putSamplerDouble(
+        key: String,
+        value: Double,
+    ): SharedPreferences.Editor = putLong(key, SamplerPreferenceCodec.encode(value))
 
     // Shared observable preferences let settings changes reach the open chat immediately.
     private fun <T> preference(key: String, default: T, read: (String, T) -> T,
@@ -76,9 +140,15 @@ class SettingsStore(context: Context) {
     var captionMode by label("caption_mode", if (prefs.getBoolean("show_performance", true)) "Minimal" else "Off")
     var batch by number("prefill_batch", 512)
     var flash by flag("flash_attention", true)
-    var topK by number("top_k", 40)
-    var topPercent by number("top_p_percent", 90)
-    var minPercent by number("min_p_percent", 5)
+    var topK: Int
+        get() = samplerConfig.topK
+        set(value) { samplerConfig = samplerConfig.copy(topK = value) }
+    var topPercent: Int
+        get() = (samplerConfig.topP * 100.0).roundToInt()
+        set(value) { samplerConfig = samplerConfig.copy(topP = value / 100.0) }
+    var minPercent: Int
+        get() = (samplerConfig.minP * 100.0).roundToInt()
+        set(value) { samplerConfig = samplerConfig.copy(minP = value / 100.0) }
     var maxTokens by number("max_tokens", 1024)
     var theme by label("appearance_mode", "System")
     var accent by label("appearance_accent", "Emerald")
@@ -117,16 +187,16 @@ class SettingsStore(context: Context) {
         set(v) { prefs.edit().putInt("context_size", v.coerceIn(1024, 16384)).apply() }
 
     var temperature: Double
-        get() = prefs.getFloat("temperature", 0.7f).toDouble()
-        set(v) { prefs.edit().putFloat("temperature", v.coerceIn(0.0, 2.0).toFloat()).apply() }
+        get() = samplerConfig.temperature
+        set(value) { samplerConfig = samplerConfig.copy(temperature = value) }
 
     var repeatPenalty: Double
-        get() = prefs.getFloat("repeat_penalty", 1.18f).toDouble()
-        set(v) { prefs.edit().putFloat("repeat_penalty", v.coerceIn(1.0, 2.0).toFloat()).apply() }
+        get() = samplerConfig.repeatPenalty
+        set(value) { samplerConfig = samplerConfig.copy(repeatPenalty = value) }
 
     var dryMultiplier: Double
-        get() = prefs.getFloat("dry_multiplier", 0.8f).toDouble()
-        set(v) { prefs.edit().putFloat("dry_multiplier", v.coerceIn(0.0, 2.0).toFloat()).apply() }
+        get() = samplerConfig.dryMultiplier
+        set(value) { samplerConfig = samplerConfig.copy(dryMultiplier = value) }
 
     var systemPrompt: String
         get() = prefs.getString("system_prompt", DEFAULT_SYSTEM_PROMPT) ?: DEFAULT_SYSTEM_PROMPT
@@ -166,4 +236,41 @@ class SettingsStore(context: Context) {
     var vulkanGpuLayers: Int
         get() = prefs.getInt("vulkan_gpu_layers", 99).coerceIn(0, 99)
         set(v) { prefs.edit().putInt("vulkan_gpu_layers", v.coerceIn(0, 99)).apply() }
+
+    private fun readSamplerConfig(): SamplerConfig {
+        fun value(key: String, default: Double) = readSamplerDouble(key, default)
+        fun percent(key: String, default: Double) = readSamplerPercent(key, default)
+        return SamplerConfig(
+            temperature = value(KEY_TEMPERATURE, SamplerConfig.DEFAULT_TEMPERATURE),
+            topK = prefs.getInt(KEY_TOP_K, SamplerConfig.DEFAULT_TOP_K),
+            topP = percent(KEY_TOP_P_PERCENT, SamplerConfig.DEFAULT_TOP_P),
+            minP = percent(KEY_MIN_P_PERCENT, SamplerConfig.DEFAULT_MIN_P),
+            repeatPenalty = value(KEY_REPEAT_PENALTY, SamplerConfig.DEFAULT_REPEAT_PENALTY),
+            penaltyLastN = prefs.getInt(KEY_PENALTY_LAST_N, SamplerConfig.DEFAULT_PENALTY_LAST_N),
+            frequencyPenalty = value(KEY_FREQUENCY_PENALTY, SamplerConfig.DEFAULT_FREQUENCY_PENALTY),
+            presencePenalty = value(KEY_PRESENCE_PENALTY, SamplerConfig.DEFAULT_PRESENCE_PENALTY),
+            dryMultiplier = value(KEY_DRY_MULTIPLIER, SamplerConfig.DEFAULT_DRY_MULTIPLIER),
+            dryBase = value(KEY_DRY_BASE, SamplerConfig.DEFAULT_DRY_BASE),
+            dryAllowedLength = prefs.getInt(KEY_DRY_ALLOWED_LENGTH, SamplerConfig.DEFAULT_DRY_ALLOWED_LENGTH),
+            dryPenaltyLastN = prefs.getInt(KEY_DRY_PENALTY_LAST_N, SamplerConfig.DEFAULT_DRY_PENALTY_LAST_N),
+            xtcProbability = value(KEY_XTC_PROBABILITY, SamplerConfig.DEFAULT_XTC_PROBABILITY),
+            xtcThreshold = value(KEY_XTC_THRESHOLD, SamplerConfig.DEFAULT_XTC_THRESHOLD),
+            topNSigma = value(KEY_TOP_N_SIGMA, SamplerConfig.DEFAULT_TOP_N_SIGMA),
+            typicalP = value(KEY_TYPICAL_P, SamplerConfig.DEFAULT_TYPICAL_P),
+            dynatempRange = value(KEY_DYNATEMP_RANGE, SamplerConfig.DEFAULT_DYNATEMP_RANGE),
+            dynatempExponent = value(KEY_DYNATEMP_EXPONENT, SamplerConfig.DEFAULT_DYNATEMP_EXPONENT),
+            mirostatEnabled = prefs.getBoolean(KEY_MIROSTAT_ENABLED, SamplerConfig.DEFAULT_MIROSTAT_ENABLED),
+            mirostatTau = value(KEY_MIROSTAT_TAU, SamplerConfig.DEFAULT_MIROSTAT_TAU),
+            mirostatEta = value(KEY_MIROSTAT_ETA, SamplerConfig.DEFAULT_MIROSTAT_ETA),
+            seed = prefs.getLong(KEY_SAMPLER_SEED, SamplerConfig.DEFAULT_SEED),
+        ).clamped()
+    }
+
+    /** Reads current raw-bit values while accepting the original float storage. */
+    private fun readSamplerDouble(key: String, default: Double): Double =
+        SamplerPreferenceCodec.decode(prefs.all[key]) ?: default
+
+    /** Migrates the original integer-percentage keys without rounding current values. */
+    private fun readSamplerPercent(key: String, default: Double): Double =
+        SamplerPreferenceCodec.decodePercent(prefs.all[key]) ?: default
 }

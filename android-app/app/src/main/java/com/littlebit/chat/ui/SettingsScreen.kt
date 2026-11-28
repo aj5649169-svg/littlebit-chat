@@ -47,6 +47,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.littlebit.chat.data.SettingsStore
+import com.littlebit.chat.engine.SamplerConfig
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -94,9 +95,6 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
 
     var threads by remember { mutableFloatStateOf(settings.threads.toFloat()) }
     var ctxSize by remember { mutableFloatStateOf(settings.contextSize.toFloat()) }
-    var temperature by remember { mutableFloatStateOf(settings.temperature.toFloat()) }
-    var repeatPenalty by remember { mutableFloatStateOf(settings.repeatPenalty.toFloat()) }
-    var dry by remember { mutableFloatStateOf(settings.dryMultiplier.toFloat()) }
     var systemPrompt by remember { mutableStateOf(settings.systemPrompt) }
     var vulkanEnabled by remember { mutableStateOf(settings.vulkanOffload) }
     var gpuLayers by remember { mutableFloatStateOf(settings.vulkanGpuLayers.toFloat()) }
@@ -467,49 +465,12 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
             }
             if (advanced) {
                 item { TextButton(onClick = {
-                    temperature = .7f; dry = .8f; repeatPenalty = 1.18f
-                    settings.temperature = .7; settings.dryMultiplier = .8; settings.repeatPenalty = 1.18
-                    settings.batch = 512; settings.flash = true; settings.topK = 40; settings.topPercent = 90
-                    settings.minPercent = 5; settings.maxTokens = 1024; reloadNeeded = true
-                }) { Text("Reset to defaults") } }
-                item(key = "temp") {
-                    SliderRow(
-                        label = "Temperature",
-                        value = temperature,
-                        range = 0f..2f,
-                        steps = 39,
-                        display = "%.2f".format(temperature),
-                        onChange = { temperature = it },
-                        onChangeFinished = { settings.temperature = temperature.toDouble() },
-                    )
-                }
-                item(key = "rep") {
-                    SliderRow(
-                        label = "Repeat Penalty",
-                        value = repeatPenalty,
-                        range = 1f..2f,
-                        steps = 49,
-                        display = "%.2f".format(repeatPenalty),
-                        onChange = { repeatPenalty = it },
-                        onChangeFinished = { settings.repeatPenalty = repeatPenalty.toDouble() },
-                    )
-                }
-                item(key = "dry") {
-                    SliderRow(
-                        label = "DRY Multiplier",
-                        value = dry,
-                        range = 0f..2f,
-                        steps = 39,
-                        display = "%.2f".format(dry),
-                        onChange = { dry = it },
-                        onChangeFinished = { settings.dryMultiplier = dry.toDouble() },
-                    )
-                }
+                    settings.batch = 512; settings.flash = true
+                    settings.maxTokens = 1024; reloadNeeded = true
+                }) { Text("Reset engine defaults") } }
+                item(key = "sampler-suite") { SamplerSuite(settings) }
                 item { Choices("Prefill batch · reload model", listOf("256","512"), settings.batch.coerceAtMost(512).toString()) { settings.batch = it.toInt(); reloadNeeded = true } }
                 item { SwitchRow("Vulkan Flash Attention", "Try Q8 KV cache on reload. CPU uses F16.", settings.flash) { settings.flash = it; reloadNeeded = true } }
-                item { Choices("Top K", listOf("0","20","40","80"), settings.topK.toString()) { settings.topK = it.toInt() } }
-                item { Choices("Top P (%)", listOf("80","90","95","100"), settings.topPercent.toString()) { settings.topPercent = it.toInt() } }
-                item { Choices("Min P (%)", listOf("0","5","10"), settings.minPercent.toString()) { settings.minPercent = it.toInt() } }
                 if (lastStage.isNotBlank()) item {
                     SettingPanel("Last inference stage") {
                         androidx.compose.foundation.text.selection.SelectionContainer { Text(lastStage) }
@@ -575,6 +536,7 @@ private fun SliderRow(
     range: ClosedFloatingPointRange<Float>,
     steps: Int,
     display: String,
+    enabled: Boolean = true,
     onChange: (Float) -> Unit,
     onChangeFinished: () -> Unit,
 ) {
@@ -585,10 +547,301 @@ private fun SliderRow(
             onValueChange = onChange,
             valueRange = range,
             steps = steps,
+            enabled = enabled,
             display = display,
             contentDescription = label,
             onValueChangeFinished = onChangeFinished,
         )
+    }
+}
+
+@Composable
+private fun SamplerSuite(settings: SettingsStore) {
+    var sampler by remember { mutableStateOf(settings.samplerConfig) }
+    var seedText by remember { mutableStateOf(settings.samplerConfig.seed.toString()) }
+    var showAdvanced by remember { mutableStateOf(false) }
+
+    val parsedSeed = seedText.trim().toLongOrNull()
+    val seedValid = parsedSeed == SamplerConfig.DEFAULT_SEED ||
+        (parsedSeed != null && parsedSeed in 0L..SamplerConfig.MAX_SEED)
+
+    fun persist(value: SamplerConfig) {
+        val safe = value.clamped()
+        sampler = safe
+        settings.samplerConfig = safe
+    }
+
+    SettingPanel("Sampler suite") {
+        Text(
+            "These controls apply to local generation.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        SliderRow(
+            label = "Temperature",
+            value = sampler.temperature.toFloat(),
+            range = 0f..2f,
+            steps = 39,
+            display = "%.2f".format(sampler.temperature),
+            onChange = { sampler = sampler.copy(temperature = it.toDouble()) },
+            onChangeFinished = { persist(sampler) },
+        )
+        SliderRow(
+            label = "Repeat Penalty",
+            value = sampler.repeatPenalty.toFloat(),
+            range = 1f..2f,
+            steps = 49,
+            display = "%.2f".format(sampler.repeatPenalty),
+            onChange = { sampler = sampler.copy(repeatPenalty = it.toDouble()) },
+            onChangeFinished = { persist(sampler) },
+        )
+        SliderRow(
+            label = "DRY Multiplier",
+            value = sampler.dryMultiplier.toFloat(),
+            range = 0f..2f,
+            steps = 39,
+            display = "%.2f".format(sampler.dryMultiplier),
+            onChange = { sampler = sampler.copy(dryMultiplier = it.toDouble()) },
+            onChangeFinished = { persist(sampler) },
+        )
+        val topKChoices = listOf("0", "20", "40", "80", "160", "320", "640", "1000")
+        Choices(
+            title = "Top K",
+            choices = topKChoices,
+            selected = sampler.topK.toString(),
+        ) { value -> persist(sampler.copy(topK = value.toInt())) }
+        Choices(
+            title = "Top P (%)",
+            choices = listOf("80", "90", "95", "100"),
+            selected = (sampler.topP * 100.0).roundToInt().toString(),
+            enabled = !sampler.mirostatEnabled,
+        ) { value -> persist(sampler.copy(topP = value.toInt() / 100.0)) }
+        Choices(
+            title = "Min P (%)",
+            choices = listOf("0", "5", "10"),
+            selected = (sampler.minP * 100.0).roundToInt().toString(),
+            enabled = !sampler.mirostatEnabled,
+        ) { value -> persist(sampler.copy(minP = value.toInt() / 100.0)) }
+
+        OutlinedTextField(
+            value = seedText,
+            onValueChange = { text ->
+                seedText = text
+                val seed = text.trim().toLongOrNull()
+                if (seed != null &&
+                    (seed == SamplerConfig.DEFAULT_SEED || seed in 0L..SamplerConfig.MAX_SEED)
+                ) {
+                    persist(sampler.copy(seed = seed))
+                }
+            },
+            label = { Text("Seed lock (−1 = random)") },
+            supportingText = {
+                if (!seedValid) Text("Enter −1 or an integer from 0 to ${SamplerConfig.MAX_SEED}.")
+            },
+            isError = !seedValid,
+            singleLine = true,
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                keyboardType = androidx.compose.ui.text.input.KeyboardType.Text,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        TextButton(onClick = { showAdvanced = !showAdvanced }) {
+            Text(if (showAdvanced) "Hide optional samplers" else "Show optional samplers")
+        }
+
+        if (showAdvanced) {
+            SliderRow(
+                label = "Penalty Window",
+                value = sampler.penaltyLastN.toFloat(),
+                range = 0f..512f,
+                steps = 127,
+                display = sampler.penaltyLastN.toString(),
+                onChange = { sampler = sampler.copy(penaltyLastN = it.toInt()) },
+                onChangeFinished = { persist(sampler) },
+            )
+            SliderRow(
+                label = "Frequency Penalty",
+                value = sampler.frequencyPenalty.toFloat(),
+                range = -2f..2f,
+                steps = 79,
+                display = "%.2f".format(sampler.frequencyPenalty),
+                onChange = { sampler = sampler.copy(frequencyPenalty = it.toDouble()) },
+                onChangeFinished = { persist(sampler) },
+            )
+            SliderRow(
+                label = "Presence Penalty",
+                value = sampler.presencePenalty.toFloat(),
+                range = -2f..2f,
+                steps = 79,
+                display = "%.2f".format(sampler.presencePenalty),
+                onChange = { sampler = sampler.copy(presencePenalty = it.toDouble()) },
+                onChangeFinished = { persist(sampler) },
+            )
+            SliderRow(
+                label = "DRY Base",
+                value = sampler.dryBase.toFloat(),
+                range = 1f..4f,
+                steps = 59,
+                display = "%.2f".format(sampler.dryBase),
+                onChange = { sampler = sampler.copy(dryBase = it.toDouble()) },
+                onChangeFinished = { persist(sampler) },
+            )
+            SliderRow(
+                label = "DRY Allowed Length",
+                value = sampler.dryAllowedLength.toFloat(),
+                range = 0f..128f,
+                steps = 31,
+                display = sampler.dryAllowedLength.toString(),
+                onChange = { sampler = sampler.copy(dryAllowedLength = it.toInt()) },
+                onChangeFinished = { persist(sampler) },
+            )
+            SliderRow(
+                label = "DRY Window",
+                value = sampler.dryPenaltyLastN.toFloat(),
+                range = 0f..512f,
+                steps = 127,
+                display = sampler.dryPenaltyLastN.toString(),
+                onChange = { sampler = sampler.copy(dryPenaltyLastN = it.toInt()) },
+                onChangeFinished = { persist(sampler) },
+            )
+
+            val typicalEnabled = sampler.typicalP < 1.0
+            SwitchRow(
+                title = "Typical-p",
+                subtitle = "Keep locally typical tokens before nucleus filtering.",
+                checked = typicalEnabled,
+                enabled = !sampler.mirostatEnabled,
+            ) { enabled ->
+                persist(sampler.copy(typicalP = if (enabled) 0.90 else 1.0))
+            }
+            if (typicalEnabled) {
+                SliderRow(
+                    label = "Typical-p",
+                    value = sampler.typicalP.toFloat(),
+                    range = 0f..1f,
+                    steps = 19,
+                    enabled = !sampler.mirostatEnabled,
+                    display = "%.2f".format(sampler.typicalP),
+                    onChange = { sampler = sampler.copy(typicalP = it.toDouble()) },
+                    onChangeFinished = { persist(sampler) },
+                )
+            }
+
+            val topNSigmaEnabled = sampler.topNSigma > 0.0
+            SwitchRow(
+                title = "Top-N-Sigma",
+                subtitle = "Discard logits far below the leading distribution.",
+                checked = topNSigmaEnabled,
+                enabled = !sampler.mirostatEnabled,
+            ) { enabled ->
+                persist(sampler.copy(topNSigma = if (enabled) 1.0 else 0.0))
+            }
+            if (topNSigmaEnabled) {
+                SliderRow(
+                    label = "Top-N-Sigma",
+                    value = sampler.topNSigma.toFloat(),
+                    range = 0f..100f,
+                    steps = 99,
+                    enabled = !sampler.mirostatEnabled,
+                    display = "%.2f".format(sampler.topNSigma),
+                    onChange = { sampler = sampler.copy(topNSigma = it.toDouble()) },
+                    onChangeFinished = { persist(sampler) },
+                )
+            }
+
+            val xtcEnabled = sampler.xtcProbability > 0.0
+            SwitchRow(
+                title = "XTC",
+                subtitle = "Remove likely tokens to counter repetition.",
+                checked = xtcEnabled,
+                enabled = !sampler.mirostatEnabled,
+            ) { enabled ->
+                persist(sampler.copy(xtcProbability = if (enabled) 0.20 else 0.0))
+            }
+            if (xtcEnabled) {
+                SliderRow(
+                    label = "XTC Probability",
+                    value = sampler.xtcProbability.toFloat(),
+                    range = 0f..1f,
+                    steps = 19,
+                    enabled = !sampler.mirostatEnabled,
+                    display = "%.2f".format(sampler.xtcProbability),
+                    onChange = { sampler = sampler.copy(xtcProbability = it.toDouble()) },
+                    onChangeFinished = { persist(sampler) },
+                )
+                SliderRow(
+                    label = "XTC Threshold",
+                    value = sampler.xtcThreshold.toFloat(),
+                    range = 0f..0.5f,
+                    steps = 9,
+                    enabled = !sampler.mirostatEnabled,
+                    display = "%.2f".format(sampler.xtcThreshold),
+                    onChange = { sampler = sampler.copy(xtcThreshold = it.toDouble()) },
+                    onChangeFinished = { persist(sampler) },
+                )
+            }
+
+            val dynatempEnabled = sampler.dynatempRange > 0.0
+            SwitchRow(
+                title = "Dynamic Temperature",
+                subtitle = "Replaces fixed temperature scaling with entropy-aware scaling.",
+                checked = dynatempEnabled,
+            ) { enabled ->
+                persist(sampler.copy(dynatempRange = if (enabled) 0.50 else 0.0))
+            }
+            if (dynatempEnabled) {
+                SliderRow(
+                    label = "Dynamic Temperature Range",
+                    value = sampler.dynatempRange.toFloat(),
+                    range = 0f..4f,
+                    steps = 39,
+                    display = "%.2f".format(sampler.dynatempRange),
+                    onChange = { sampler = sampler.copy(dynatempRange = it.toDouble()) },
+                    onChangeFinished = { persist(sampler) },
+                )
+                SliderRow(
+                    label = "Dynamic Temperature Exponent",
+                    value = sampler.dynatempExponent.toFloat(),
+                    range = 0.01f..4f,
+                    steps = 398,
+                    display = "%.2f".format(sampler.dynatempExponent),
+                    onChange = { sampler = sampler.copy(dynatempExponent = it.toDouble()) },
+                    onChangeFinished = { persist(sampler) },
+                )
+            }
+
+            SwitchRow(
+                title = "Mirostat v2",
+                subtitle = "Adaptive surprise targeting. Bypasses Typical, Top-N-Sigma, Top P, Min P, and XTC.",
+                checked = sampler.mirostatEnabled,
+            ) { enabled -> persist(sampler.copy(mirostatEnabled = enabled)) }
+            if (sampler.mirostatEnabled) {
+                SliderRow(
+                    label = "Mirostat Tau",
+                    value = sampler.mirostatTau.toFloat(),
+                    range = 0.01f..10f,
+                    steps = 998,
+                    display = "%.2f".format(sampler.mirostatTau),
+                    onChange = { sampler = sampler.copy(mirostatTau = it.toDouble()) },
+                    onChangeFinished = { persist(sampler) },
+                )
+                SliderRow(
+                    label = "Mirostat Eta",
+                    value = sampler.mirostatEta.toFloat(),
+                    range = 0.001f..1f,
+                    steps = 998,
+                    display = "%.3f".format(sampler.mirostatEta),
+                    onChange = { sampler = sampler.copy(mirostatEta = it.toDouble()) },
+                    onChangeFinished = { persist(sampler) },
+                )
+            }
+        }
+
+        TextButton(onClick = {
+            persist(SamplerConfig.DEFAULT)
+            seedText = SamplerConfig.DEFAULT_SEED.toString()
+        }) { Text("Reset samplers to defaults") }
     }
 }
 
@@ -742,7 +995,13 @@ private fun SwitchRow(
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun Choices(title: String, choices: List<String>, selected: String, choose: (String) -> Unit) {
+private fun Choices(
+    title: String,
+    choices: List<String>,
+    selected: String,
+    enabled: Boolean = true,
+    choose: (String) -> Unit,
+) {
     val buzz = hapticAction()
     Column {
         Text(title, style = MaterialTheme.typography.titleSmall)
@@ -751,7 +1010,7 @@ private fun Choices(title: String, choices: List<String>, selected: String, choo
                 if (title == "Accent") {
                     val swatches = mapOf("Emerald" to 0xff31795e, "Ocean Blue" to 0xff376e9d,
                         "Violet" to 0xff7854a1, "Amber" to 0xff8a631a, "Rose" to 0xffa04d69)
-                    androidx.compose.material3.IconButton(onClick = { buzz(); choose(item) },
+                    androidx.compose.material3.IconButton(enabled = enabled, onClick = { buzz(); choose(item) },
                         modifier = Modifier.semantics { contentDescription = if (selected == item) "$item, selected" else item }) {
                         androidx.compose.material3.Surface(shape = androidx.compose.foundation.shape.CircleShape,
                             color = androidx.compose.ui.graphics.Color(swatches.getValue(item))) {
@@ -760,8 +1019,13 @@ private fun Choices(title: String, choices: List<String>, selected: String, choo
                             }
                         }
                     }
-                } else androidx.compose.material3.FilterChip(shape = RoundedCornerShape(24.dp), selected = selected == item,
-                    onClick = { buzz(); choose(item) }, label = { Text(item) })
+                } else androidx.compose.material3.FilterChip(
+                    shape = RoundedCornerShape(24.dp),
+                    selected = selected == item,
+                    enabled = enabled,
+                    onClick = { buzz(); choose(item) },
+                    label = { Text(item) },
+                )
             }
         }
     }

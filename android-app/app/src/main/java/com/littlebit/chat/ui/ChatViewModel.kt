@@ -1130,10 +1130,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun samplingParams(maxTokens: Int = assistantMaxTokens ?: settings.maxTokens) = SamplingParams(
+        sampler = settings.samplerConfig.copy(
+            temperature = assistantTemperature ?: settings.samplerConfig.temperature,
+        ),
+        maxTokens = maxTokens,
         thinkingBudget = if (fastMode) -1 else settings.thinkingBudget.toIntOrNull() ?: -1,
-        temperature = assistantTemperature ?: settings.temperature, repeatPenalty = settings.repeatPenalty,
-        dryMultiplier = settings.dryMultiplier, maxTokens = maxTokens,
-        topK = settings.topK, topP = settings.topPercent / 100.0, minP = settings.minPercent / 100.0,
         stopStrings = settings.stopStrings.lines().filter { it.isNotBlank() }.take(8),
     )
 
@@ -1314,7 +1315,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         load(n)
                         if (n > 0 && !isUsingVulkan) return 0.0
                         val prompt = engine.formatChat(SettingsStore.DEFAULT_SYSTEM_PROMPT,listOf("user" to "Describe the water cycle."), thinking = false)
-                        val r = engine.generate(prompt,SamplingParams(maxTokens = 64, seed = 42))
+                        val r = engine.generate(
+                            prompt,
+                            SamplingParams(sampler = settings.samplerConfig.copy(seed = 42), maxTokens = 64),
+                        )
                         require(r.status == 0 && r.tokens > 0) { r.error ?: "Comparison interrupted" }
                         return r.tokensPerSec
                     }
@@ -1376,8 +1380,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         bench.reset()
                         val prompt = engine.formatChat(SettingsStore.DEFAULT_SYSTEM_PROMPT,
                             listOf("user" to ThinkBlocks.withNoThink(preset.promptText(), modelInfo?.architecture)))
-                        val result = bench.generate(prompt, SamplingParams(maxTokens = preset.genTokens, seed = 42),
-                            prefill = { _, _ -> if (stopRequested) bench.stop() })
+                        val result = bench.generate(
+                            prompt,
+                            SamplingParams(sampler = settings.samplerConfig.copy(seed = 42), maxTokens = preset.genTokens),
+                            prefill = { _, _ -> if (stopRequested) bench.stop() },
+                        )
                         check(result.status == 0) { result.error ?: "Benchmark interrupted" }
                         val m = bench.metrics()
                         val row = "%s · %s · %d threads · %d GPU layers\n%.1f p/s · %.1f t/s · %.0f ms TTFT (%d tokens)".format(

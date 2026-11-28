@@ -26,10 +26,12 @@ static const std::string kThinkClose = std::string(1, char(60)) + "/think" + cha
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <mutex>
 #include <memory>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -411,40 +413,399 @@ void callOnError(JNIEnv * env, jobject cb, const char * msg) {
     env->DeleteLocalRef(jmsg);
 }
 
-struct SamplerOpts {
-    double top_p, min_p;
-    double temp;
-    int    top_k;
-    double repeat_penalty;
-    double dry_multiplier;
-    long   seed;
+constexpr jsize kSamplerSlotCount = 22;
+
+enum SamplerSlot {
+    SAMPLER_TEMPERATURE = 0,
+    SAMPLER_TOP_K = 1,
+    SAMPLER_TOP_P = 2,
+    SAMPLER_MIN_P = 3,
+    SAMPLER_REPEAT_PENALTY = 4,
+    SAMPLER_PENALTY_LAST_N = 5,
+    SAMPLER_FREQUENCY_PENALTY = 6,
+    SAMPLER_PRESENCE_PENALTY = 7,
+    SAMPLER_DRY_MULTIPLIER = 8,
+    SAMPLER_DRY_BASE = 9,
+    SAMPLER_DRY_ALLOWED_LENGTH = 10,
+    SAMPLER_DRY_PENALTY_LAST_N = 11,
+    SAMPLER_XTC_PROBABILITY = 12,
+    SAMPLER_XTC_THRESHOLD = 13,
+    SAMPLER_TOP_N_SIGMA = 14,
+    SAMPLER_TYPICAL_P = 15,
+    SAMPLER_DYNATEMP_RANGE = 16,
+    SAMPLER_DYNATEMP_EXPONENT = 17,
+    SAMPLER_MIROSTAT_ENABLED = 18,
+    SAMPLER_MIROSTAT_TAU = 19,
+    SAMPLER_MIROSTAT_ETA = 20,
+    SAMPLER_SEED = 21,
 };
 
-// Sampler chain: penalties -> DRY (optional) -> top-k -> temperature -> dist/greedy.
-llama_sampler * buildSampler(const llama_vocab * vocab, int n_vocab, const SamplerOpts & o) {
+struct SamplerOpts {
+    double temperature = 0.7;
+    int32_t top_k = 40;
+    double top_p = 0.90;
+    double min_p = 0.05;
+    double repeat_penalty = 1.18;
+    int32_t penalty_last_n = 64;
+    double frequency_penalty = 0.0;
+    double presence_penalty = 0.0;
+    double dry_multiplier = 0.8;
+    double dry_base = 1.75;
+    int32_t dry_allowed_length = 2;
+    int32_t dry_penalty_last_n = 64;
+    double xtc_probability = 0.0;
+    double xtc_threshold = 0.10;
+    double top_n_sigma = 0.0;
+    double typical_p = 1.0;
+    double dynatemp_range = 0.0;
+    double dynatemp_exponent = 1.0;
+    bool mirostat_enabled = false;
+    double mirostat_tau = 5.0;
+    double mirostat_eta = 0.10;
+    int64_t seed = -1;
+};
+
+double finiteClamp(double value, double minimum, double maximum, double fallback) {
+    if (!std::isfinite(value)) return fallback;
+    return std::max(minimum, std::min(maximum, value));
+}
+
+int32_t finiteIntClamp(double value, int32_t minimum, int32_t maximum, int32_t fallback) {
+    if (!std::isfinite(value)) return fallback;
+    return static_cast<int32_t>(std::max(static_cast<double>(minimum),
+                                         std::min(static_cast<double>(maximum), value)));
+}
+
+// Owns the JNI array view until its values have been copied into SamplerOpts.
+// JNI_ABORT discards any hypothetical writes without copying the array back.
+class DoubleArrayView {
+public:
+    DoubleArrayView(JNIEnv * env, jdoubleArray array) : env_(env), array_(array) {
+        values_ = env_->GetDoubleArrayElements(array_, nullptr);
+    }
+
+    ~DoubleArrayView() {
+        if (values_ != nullptr) {
+            env_->ReleaseDoubleArrayElements(array_, values_, JNI_ABORT);
+        }
+    }
+
+    DoubleArrayView(const DoubleArrayView &) = delete;
+    DoubleArrayView & operator=(const DoubleArrayView &) = delete;
+
+    const jdouble * values() const { return values_; }
+
+private:
+    JNIEnv * env_;
+    jdoubleArray array_;
+    jdouble * values_ = nullptr;
+};
+
+// LLAMA_DEFAULT_SEED (0xFFFFFFFF) is llama.cpp's random-seed sentinel, but the
+// app ABI reserves -1 for random and allows every non-negative uint32 seed.
+// These small samplers mirror the pinned upstream CPU algorithms while seeding
+// std::mt19937 directly, so an explicit 0xFFFFFFFF remains deterministic.
+enum class ForcedSamplerKind {
+    Dist,
+    Xtc,
+    MirostatV2,
+};
+
+struct ForcedSeedSampler {
+    ForcedSamplerKind kind;
+    uint32_t seed;
+    float probability;
+    float threshold;
+    float tau;
+    float eta;
+    float mu;
+    std::mt19937 rng;
+
+    ForcedSeedSampler(ForcedSamplerKind kind, uint32_t seed,
+                      float probability, float threshold, float tau, float eta)
+        : kind(kind), seed(seed), probability(probability), threshold(threshold),
+          tau(tau), eta(eta), mu(2.0f * tau), rng(seed) {}
+};
+
+const char * forcedSamplerName(const llama_sampler * smpl) {
+    const auto * ctx = static_cast<const ForcedSeedSampler *>(smpl->ctx);
+    switch (ctx->kind) {
+        case ForcedSamplerKind::Dist:      return "dist-forced-seed";
+        case ForcedSamplerKind::Xtc:       return "xtc-forced-seed";
+        case ForcedSamplerKind::MirostatV2: return "mirostat-v2-forced-seed";
+    }
+    return "forced-seed";
+}
+
+void sortForcedSamplerCandidates(llama_token_data_array * cur_p) {
+    std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> sorter(
+        llama_sampler_init_top_k(static_cast<int32_t>(cur_p->size)), llama_sampler_free);
+    if (!sorter) return;
+    llama_sampler_apply(sorter.get(), cur_p);
+}
+
+void forcedSamplerSoftmax(llama_token_data_array * cur_p, bool do_sort) {
+    if (cur_p == nullptr || cur_p->data == nullptr || cur_p->size == 0) return;
+
+    if (do_sort && !cur_p->sorted) {
+        sortForcedSamplerCandidates(cur_p);
+    }
+
+    float max_logit = cur_p->data[0].logit;
+    if (!cur_p->sorted) {
+        for (size_t i = 1; i < cur_p->size; ++i) {
+            max_logit = std::max(max_logit, cur_p->data[i].logit);
+        }
+    }
+
+    float cumulative = 0.0f;
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        const float probability = std::exp(cur_p->data[i].logit - max_logit);
+        cur_p->data[i].p = probability;
+        cumulative += probability;
+    }
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        cur_p->data[i].p /= cumulative;
+    }
+}
+
+void forcedSamplerApply(llama_sampler * smpl, llama_token_data_array * cur_p) {
+    auto * ctx = static_cast<ForcedSeedSampler *>(smpl->ctx);
+    if (cur_p == nullptr || cur_p->data == nullptr || cur_p->size == 0) return;
+
+    if (ctx->kind == ForcedSamplerKind::Dist) {
+        forcedSamplerSoftmax(cur_p, false);
+        double cumulative = 0.0;
+        for (size_t i = 0; i < cur_p->size; ++i) {
+            cumulative += cur_p->data[i].p;
+        }
+
+        std::uniform_real_distribution<double> distribution(0.0, 1.0);
+        const double target = cumulative * distribution(ctx->rng);
+        double running = 0.0;
+        bool found = false;
+        for (size_t i = 0; i < cur_p->size; ++i) {
+            if (!found) {
+                running += cur_p->data[i].p;
+                if (running >= target) {
+                    cur_p->selected = static_cast<int32_t>(i);
+                    found = true;
+                }
+            }
+            cur_p->data[i].p /= cumulative;
+        }
+        if (!found) {
+            cur_p->selected = static_cast<int32_t>(cur_p->size - 1);
+        }
+        return;
+    }
+
+    if (ctx->kind == ForcedSamplerKind::Xtc) {
+        std::uniform_real_distribution<float> distribution(0.0f, 1.0f);
+        if (distribution(ctx->rng) > ctx->probability) return;
+
+        forcedSamplerSoftmax(cur_p, true);
+        size_t last_kept = 0;
+        for (size_t i = 0; i < cur_p->size; ++i) {
+            if (cur_p->data[i].p < ctx->threshold) break;
+            last_kept = i;
+        }
+        if (cur_p->size - last_kept >= 1 && last_kept > 0) {
+            cur_p->data += last_kept;
+            cur_p->size -= last_kept;
+        }
+        return;
+    }
+
+    forcedSamplerSoftmax(cur_p, true);
+    size_t kept = 0;
+    while (kept < cur_p->size &&
+           !(-std::log2(cur_p->data[kept].p) > ctx->mu)) {
+        ++kept;
+    }
+    cur_p->size = kept;
+    if (cur_p->size == 0) cur_p->size = 1;
+
+    forcedSamplerSoftmax(cur_p, true);
+    std::vector<float> probabilities;
+    probabilities.reserve(cur_p->size);
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        probabilities.push_back(cur_p->data[i].p);
+    }
+    std::discrete_distribution<int> distribution(probabilities.begin(), probabilities.end());
+    const int selected = distribution(ctx->rng);
+    cur_p->selected = selected;
+
+    const float observed_surprise = -std::log2(cur_p->data[selected].p);
+    const float error = observed_surprise - ctx->tau;
+    ctx->mu = ctx->mu - ctx->eta * error;
+}
+
+void forcedSamplerReset(llama_sampler * smpl) {
+    auto * ctx = static_cast<ForcedSeedSampler *>(smpl->ctx);
+    ctx->rng.seed(ctx->seed);
+    ctx->mu = 2.0f * ctx->tau;
+}
+
+llama_sampler * forcedSamplerClone(const llama_sampler * smpl);
+void forcedSamplerFree(llama_sampler * smpl);
+
+static llama_sampler_i forced_sampler_i = {
+    /* .name              = */ forcedSamplerName,
+    /* .accept            = */ nullptr,
+    /* .apply             = */ forcedSamplerApply,
+    /* .reset             = */ forcedSamplerReset,
+    /* .clone             = */ forcedSamplerClone,
+    /* .free              = */ forcedSamplerFree,
+    /* .backend_init      = */ nullptr,
+    /* .backend_accept    = */ nullptr,
+    /* .backend_apply     = */ nullptr,
+    /* .backend_set_input = */ nullptr,
+    /* .backend_reset     = */ nullptr,
+    /* .copy_state        = */ nullptr,
+};
+
+llama_sampler * forcedSamplerClone(const llama_sampler * smpl) {
+    const auto * source = static_cast<const ForcedSeedSampler *>(smpl->ctx);
+    auto * copy = new ForcedSeedSampler(*source);
+    auto * result = llama_sampler_init(&forced_sampler_i, copy);
+    if (!result) delete copy;
+    return result;
+}
+
+void forcedSamplerFree(llama_sampler * smpl) {
+    delete static_cast<ForcedSeedSampler *>(smpl->ctx);
+}
+
+llama_sampler * initForcedSeedSampler(ForcedSamplerKind kind, uint32_t seed,
+                                       float probability, float threshold,
+                                       float tau, float eta) {
+    auto * ctx = new ForcedSeedSampler(kind, seed, probability, threshold, tau, eta);
+    auto * result = llama_sampler_init(&forced_sampler_i, ctx);
+    if (!result) delete ctx;
+    return result;
+}
+
+bool readSamplerOpts(JNIEnv * env, jdoubleArray sampler, SamplerOpts & o) {
+    if (sampler == nullptr) throw std::runtime_error("sampler ABI is null");
+    if (env->GetArrayLength(sampler) != kSamplerSlotCount) {
+        throw std::runtime_error("sampler ABI requires exactly 22 slots");
+    }
+
+    DoubleArrayView view(env, sampler);
+    if (view.values() == nullptr) return false;
+    const jdouble * v = view.values();
+
+    o.temperature = finiteClamp(v[SAMPLER_TEMPERATURE], 0.0, 2.0, o.temperature);
+    o.top_k = finiteIntClamp(v[SAMPLER_TOP_K], 0, 1000000, o.top_k);
+    o.top_p = finiteClamp(v[SAMPLER_TOP_P], 0.0, 1.0, o.top_p);
+    o.min_p = finiteClamp(v[SAMPLER_MIN_P], 0.0, 1.0, o.min_p);
+    o.repeat_penalty = finiteClamp(v[SAMPLER_REPEAT_PENALTY], 1.0, 2.0, o.repeat_penalty);
+    o.penalty_last_n = finiteIntClamp(v[SAMPLER_PENALTY_LAST_N], 0, 1000000, o.penalty_last_n);
+    o.frequency_penalty = finiteClamp(v[SAMPLER_FREQUENCY_PENALTY], -2.0, 2.0, o.frequency_penalty);
+    o.presence_penalty = finiteClamp(v[SAMPLER_PRESENCE_PENALTY], -2.0, 2.0, o.presence_penalty);
+    o.dry_multiplier = finiteClamp(v[SAMPLER_DRY_MULTIPLIER], 0.0, 2.0, o.dry_multiplier);
+    o.dry_base = finiteClamp(v[SAMPLER_DRY_BASE], 1.0, 4.0, o.dry_base);
+    o.dry_allowed_length = finiteIntClamp(v[SAMPLER_DRY_ALLOWED_LENGTH], 0, 128, o.dry_allowed_length);
+    o.dry_penalty_last_n = finiteIntClamp(v[SAMPLER_DRY_PENALTY_LAST_N], 0, 1000000, o.dry_penalty_last_n);
+    o.xtc_probability = finiteClamp(v[SAMPLER_XTC_PROBABILITY], 0.0, 1.0, o.xtc_probability);
+    o.xtc_threshold = finiteClamp(v[SAMPLER_XTC_THRESHOLD], 0.0, 0.5, o.xtc_threshold);
+    o.top_n_sigma = finiteClamp(v[SAMPLER_TOP_N_SIGMA], 0.0, 100.0, o.top_n_sigma);
+    o.typical_p = finiteClamp(v[SAMPLER_TYPICAL_P], 0.0, 1.0, o.typical_p);
+    o.dynatemp_range = finiteClamp(v[SAMPLER_DYNATEMP_RANGE], 0.0, 4.0, o.dynatemp_range);
+    o.dynatemp_exponent = finiteClamp(v[SAMPLER_DYNATEMP_EXPONENT], 0.01, 4.0, o.dynatemp_exponent);
+    o.mirostat_enabled = std::isfinite(v[SAMPLER_MIROSTAT_ENABLED]) && v[SAMPLER_MIROSTAT_ENABLED] != 0.0;
+    o.mirostat_tau = finiteClamp(v[SAMPLER_MIROSTAT_TAU], 0.01, 10.0, o.mirostat_tau);
+    o.mirostat_eta = finiteClamp(v[SAMPLER_MIROSTAT_ETA], 0.001, 1.0, o.mirostat_eta);
+    const double seed = finiteClamp(v[SAMPLER_SEED], -1.0, 4294967295.0, -1.0);
+    o.seed = seed < 0.0 ? -1 : static_cast<int64_t>(seed);
+    return true;
+}
+
+// Canonical chain: penalties -> dry -> top_k -> typical -> top_n_sigma ->
+// top_p -> min_p -> xtc -> temp_ext/temp -> mirostat_v2/dist.
+llama_sampler * buildSampler(JNIEnv * env, jdoubleArray sampler,
+                             const llama_vocab * vocab, int n_vocab) {
+    SamplerOpts o;
+    if (!readSamplerOpts(env, sampler, o)) return nullptr;
+
     llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
     llama_sampler * chain = llama_sampler_chain_init(sparams);
-    llama_sampler_chain_add(chain, llama_sampler_init_penalties(
-            n_vocab, 64, static_cast<float>(o.repeat_penalty), 0.0f, 0.0f));
-    if (o.dry_multiplier > 0.0) {
-        static const char * breakers[] = {"\n", ":", "\"", "*"};
-        llama_sampler_chain_add(chain, llama_sampler_init_dry(
-                vocab, static_cast<float>(o.dry_multiplier), 1.75f, 2, 64, breakers, 4));
-    }
-    if (o.top_k > 0) {
-        llama_sampler_chain_add(chain, llama_sampler_init_top_k(o.top_k));
-    }
-    if (o.temp <= 0.0) {
-        llama_sampler_chain_add(chain, llama_sampler_init_greedy());
-    } else {
-        llama_sampler_chain_add(chain, llama_sampler_init_top_p(o.top_p, 1));
-        llama_sampler_chain_add(chain, llama_sampler_init_min_p(o.min_p, 1));
-        llama_sampler_chain_add(chain, llama_sampler_init_temp(static_cast<float>(o.temp)));
-        const uint32_t useed = o.seed >= 0
+    if (chain == nullptr) return nullptr;
+
+    auto add = [chain](llama_sampler * node) {
+        if (node == nullptr) throw std::runtime_error("could not create sampler");
+        llama_sampler_chain_add(chain, node);
+    };
+
+    try {
+        add(llama_sampler_init_penalties(
+                n_vocab, o.penalty_last_n, static_cast<float>(o.repeat_penalty),
+                static_cast<float>(o.frequency_penalty), static_cast<float>(o.presence_penalty)));
+        if (o.dry_multiplier > 0.0) {
+            static const char * breakers[] = {"\n", ":", "\"", "*"};
+            add(llama_sampler_init_dry(
+                    vocab, static_cast<float>(o.dry_multiplier), static_cast<float>(o.dry_base),
+                    o.dry_allowed_length, o.dry_penalty_last_n, breakers, 4));
+        }
+        if (o.top_k > 0) {
+            add(llama_sampler_init_top_k(o.top_k));
+        }
+        if (!o.mirostat_enabled) {
+            if (o.typical_p < 1.0) {
+                add(llama_sampler_init_typical(static_cast<float>(o.typical_p), 1));
+            }
+            if (o.top_n_sigma > 0.0) {
+                add(llama_sampler_init_top_n_sigma(static_cast<float>(o.top_n_sigma)));
+            }
+            if (o.top_p < 1.0) {
+                add(llama_sampler_init_top_p(static_cast<float>(o.top_p), 1));
+            }
+            if (o.min_p > 0.0) {
+                add(llama_sampler_init_min_p(static_cast<float>(o.min_p), 1));
+            }
+        }
+
+        const bool locked_seed = o.seed >= 0;
+        const uint32_t useed = locked_seed
             ? static_cast<uint32_t>(o.seed)
-            : static_cast<uint32_t>(std::chrono::high_resolution_clock::now()
-                                        .time_since_epoch().count());
-        llama_sampler_chain_add(chain, llama_sampler_init_dist(useed));
+            : static_cast<uint32_t>(LLAMA_DEFAULT_SEED);
+        const bool force_explicit_seed = locked_seed && useed == LLAMA_DEFAULT_SEED;
+        if (!o.mirostat_enabled && o.xtc_probability > 0.0) {
+            add(force_explicit_seed
+                    ? initForcedSeedSampler(
+                        ForcedSamplerKind::Xtc, useed,
+                        static_cast<float>(o.xtc_probability),
+                        static_cast<float>(o.xtc_threshold), 0.0f, 0.0f)
+                    : llama_sampler_init_xtc(
+                        static_cast<float>(o.xtc_probability),
+                        static_cast<float>(o.xtc_threshold), 1, useed));
+        }
+        if (o.dynatemp_range > 0.0) {
+            add(llama_sampler_init_temp_ext(
+                    static_cast<float>(o.temperature), static_cast<float>(o.dynatemp_range),
+                    static_cast<float>(o.dynatemp_exponent)));
+        } else {
+            add(llama_sampler_init_temp(static_cast<float>(o.temperature)));
+        }
+        if (o.mirostat_enabled) {
+            add(force_explicit_seed
+                    ? initForcedSeedSampler(
+                        ForcedSamplerKind::MirostatV2, useed, 0.0f, 0.0f,
+                        static_cast<float>(o.mirostat_tau),
+                        static_cast<float>(o.mirostat_eta))
+                    : llama_sampler_init_mirostat_v2(
+                        useed, static_cast<float>(o.mirostat_tau),
+                        static_cast<float>(o.mirostat_eta)));
+        } else {
+            add(force_explicit_seed
+                    ? initForcedSeedSampler(
+                        ForcedSamplerKind::Dist, useed, 0.0f, 0.0f, 0.0f, 0.0f)
+                    : llama_sampler_init_dist(useed));
+        }
+    } catch (...) {
+        llama_sampler_free(chain);
+        throw;
     }
     return chain;
 }
@@ -947,9 +1308,8 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeFormatChat(
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
-        JNIEnv * env, jobject, jlong handle, jstring jprompt,
-        jdouble temp, jint top_k, jdouble top_p, jdouble min_p, jdouble repeat_penalty, jdouble dry_multiplier,
-        jint max_tokens, jlong seed, jint budget, jobjectArray jstopStrings, jobject jcallback) {
+        JNIEnv * env, jobject, jlong handle, jstring jprompt, jdoubleArray sampler,
+        jint max_tokens, jint budget, jobjectArray jstopStrings, jobject jcallback) {
     auto * e = reinterpret_cast<NativeEngine *>(handle);
     if (e == nullptr || e->ctx == nullptr) {
         throwIllegalState(env, "no model loaded");
@@ -1015,16 +1375,13 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
             return -1;
         }
 
-        SamplerOpts opts;
-        opts.top_p = top_p;
-        opts.min_p = min_p;
-        opts.temp           = temp;
-        opts.top_k          = top_k;
-        opts.repeat_penalty = repeat_penalty;
-        opts.dry_multiplier = dry_multiplier;
-        opts.seed           = static_cast<long>(seed);
-        llama_sampler * chain = buildSampler(e->vocab, n_vocab, opts);
-        if (chain == nullptr) { env->DeleteGlobalRef(cb); throwIllegalState(env, "could not create sampler"); return -1; }
+        std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> chain(
+            buildSampler(env, sampler, e->vocab, n_vocab), llama_sampler_free);
+        if (!chain) {
+            env->DeleteGlobalRef(cb);
+            if (!env->ExceptionCheck()) throwIllegalState(env, "could not create sampler");
+            return -1;
+        }
 
         bool failed = false;
 
@@ -1050,7 +1407,6 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
         env->CallVoidMethod(cb, g_prefill, lcp, n_prompt);
         if (env->ExceptionCheck()) {
             e->in_prefill.store(false);
-            llama_sampler_free(chain);
             env->DeleteGlobalRef(cb);
             return -1;
         }
@@ -1086,7 +1442,6 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
             env->CallVoidMethod(cb, g_prefill, e->n_past, n_prompt);
             if (env->ExceptionCheck()) {
                 e->in_prefill.store(false);
-                llama_sampler_free(chain);
                 env->DeleteGlobalRef(cb);
                 return -1;
             }
@@ -1104,9 +1459,8 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
         }
         int status = 0;
         if (!failed && !e->stop.load()) {
-            status = runSamplingLoop(env, e, cb, chain, max_tokens, budget, &stopFilter);
+            status = runSamplingLoop(env, e, cb, chain.get(), max_tokens, budget, &stopFilter);
         }
-        if (chain != nullptr) { llama_sampler_free(chain); chain = nullptr; }
 
         env->DeleteGlobalRef(cb);
 
@@ -1122,9 +1476,8 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeGenerate(
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_littlebit_chat_engine_LlamaJni_nativeContinueGenerate(
-        JNIEnv * env, jobject, jlong handle,
-        jdouble temp, jint top_k, jdouble top_p, jdouble min_p, jdouble repeat_penalty, jdouble dry_multiplier,
-        jint max_tokens, jlong seed, jint budget, jobjectArray jstopStrings, jobject jcallback) {
+        JNIEnv * env, jobject, jlong handle, jdoubleArray sampler,
+        jint max_tokens, jint budget, jobjectArray jstopStrings, jobject jcallback) {
     auto * e = reinterpret_cast<NativeEngine *>(handle);
     if (e == nullptr || e->ctx == nullptr) {
         throwIllegalState(env, "no model loaded");
@@ -1152,19 +1505,15 @@ Java_com_littlebit_chat_engine_LlamaJni_nativeContinueGenerate(
         e->stop.store(false);
         const int n_vocab = static_cast<int>(llama_vocab_n_tokens(e->vocab));
 
-        SamplerOpts opts;
-        opts.top_p = top_p;
-        opts.min_p = min_p;
-        opts.temp           = temp;
-        opts.top_k          = top_k;
-        opts.repeat_penalty = repeat_penalty;
-        opts.dry_multiplier = dry_multiplier;
-        opts.seed           = static_cast<long>(seed);
-        llama_sampler * chain = buildSampler(e->vocab, n_vocab, opts);
-        if (chain == nullptr) { env->DeleteGlobalRef(cb); throwIllegalState(env, "could not create sampler"); return -1; }
+        std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> chain(
+            buildSampler(env, sampler, e->vocab, n_vocab), llama_sampler_free);
+        if (!chain) {
+            env->DeleteGlobalRef(cb);
+            if (!env->ExceptionCheck()) throwIllegalState(env, "could not create sampler");
+            return -1;
+        }
 
-        const int status = runSamplingLoop(env, e, cb, chain, max_tokens, budget, &stopFilter);
-        if (chain != nullptr) { llama_sampler_free(chain); chain = nullptr; }
+        const int status = runSamplingLoop(env, e, cb, chain.get(), max_tokens, budget, &stopFilter);
         env->DeleteGlobalRef(cb);
 
         if (e->stop.load()) return 1;
