@@ -66,11 +66,11 @@ class ChatTemplateTest {
             ChatTemplate.Turn("user", "hi"),
             ChatTemplate.Turn("assistant", "hello"),
         ))
-        assertEquals("INST sys\n\nhi /INST hello</s>INST ", out)
+        assertEquals("[INST] sys\n\nhi [/INST] hello</s>[INST] ", out)
     }
 
     @Test fun renderMistralEmptyHistory() {
-        assertEquals("INST ", ChatTemplate.MISTRAL.render("sys", emptyList()))
+        assertEquals("[INST] ", ChatTemplate.MISTRAL.render("sys", emptyList()))
     }
 
     @Test fun renderGemma() {
@@ -110,7 +110,6 @@ class ChatTemplateTest {
 
     @Test fun renderCustomFallsBackToDefaultAndAppendsPrompt() {
         val out = ChatTemplate.CUSTOM.render("SYS", listOf(ChatTemplate.Turn("user", "hi")), "")
-        assertTrue(out.contains("SYS"))
-        assertTrue(out.endsWith("hi"))
+        assertEquals("SYS\n\nUSER: hi\nASSISTANT:", out)
     }
 }

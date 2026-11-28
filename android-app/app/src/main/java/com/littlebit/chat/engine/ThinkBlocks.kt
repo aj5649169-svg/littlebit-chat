@@ -49,6 +49,8 @@ object ThinkBlocks {
     fun normalizeChannels(text: String): String {
         if (text.isEmpty()) return text
         return text
+            .replace("<|channel>thought\n", SHORT_OPEN)
+            .replace("<|channel>analysis\n", SHORT_OPEN)
             .replace("<|channel>thought", SHORT_OPEN)
             .replace("<|channel>analysis", SHORT_OPEN)
             .replace("<|channel>", SHORT_OPEN)

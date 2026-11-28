@@ -14,16 +14,21 @@ class StopStringsTest {
 
     @Test fun ignoresEmptyStops() {
         val f = StopFilter(listOf("", "  ", "stop"))
-        assertEquals("say ", f.feed("say st"))
-        assertEquals("op", f.feed("op"))
+        assertEquals("say", f.feed("say st"))
+        assertEquals(" ", f.feed("op"))
         assertEquals("", f.finish())
+        assertTrue(f.matched)
+        assertEquals("stop", f.matchedOn)
     }
 
     @Test fun holdsBackPartialStopAcrossChunks() {
         val f = StopFilter(listOf("</s>"))
-        assertEquals("", f.feed("answer </"))
-        assertEquals("", f.feed("s>"))
-        assertEquals("answer ", f.finish())
+        val first = f.feed("answer </")
+        val second = f.feed("s>")
+        val emitted = first + second + f.finish()
+        assertEquals("answer ", emitted)
+        assertTrue(f.matched)
+        assertEquals("</s>", f.matchedOn)
     }
 
     @Test fun emitsTextBeforeStop() {
@@ -54,8 +59,11 @@ class StopStringsTest {
 
     @Test fun releasesSafeTailBeyondHoldback() {
         val f = StopFilter(listOf("stoppest"))
-        // holdback keeps longest-1 = 7 chars; "start " is 6 chars -> released.
-        assertEquals("start ", f.feed("start st"))
-        assertEquals("", f.finish())
+        // The eight-character input leaves one character beyond the seven-character holdback.
+        val released = f.feed("start st")
+        val held = f.finish()
+        assertEquals("s", released)
+        assertEquals("tart st", held)
+        assertEquals("start st", released + held)
     }
 }
