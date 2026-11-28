@@ -55,7 +55,7 @@ fun ImageStudio(vm: ChatViewModel, onBack: () -> Unit) {
 
     // Persisted studio state lives on the ViewModel so navigating back never
     // wipes the prompt or kills an active run.
-    private val st = vm.studioState
+    val st = vm.studioState
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {

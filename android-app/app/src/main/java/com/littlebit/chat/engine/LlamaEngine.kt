@@ -73,7 +73,7 @@ class LlamaEngine(diagnosticPath: String? = null) : LlmEngine {
     override fun reset() = LlamaJni.nativeReset(handle)
     override fun promptSize(prompt: String) = LlamaJni.nativePromptSize(handle, prompt)
 
-    override fun countTokens(text: String, parseSpecial: Boolean = true) =
+    override fun countTokens(text: String, parseSpecial: Boolean) =
         if (handle == 0L) 0 else LlamaJni.nativeCountTokens(handle, text, parseSpecial)
 
     override fun setThreads(threads: Int) {

@@ -377,7 +377,7 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 }, templateLabels.entries.firstOrNull { it.key == templateId }?.value?.let {
                     if (it.id == com.littlebit.chat.engine.ChatTemplate.MODEL_DEFAULT.id) "Model default" else it.label
                 } ?: "Model default") { label ->
-                    val id = templateLabels.entries.firstOrNull { it.value.label == label && it.id != com.littlebit.chat.engine.ChatTemplate.MODEL_DEFAULT.id }?.key
+                    val id = templateLabels.entries.firstOrNull { it.value.label == label && it.value.id != com.littlebit.chat.engine.ChatTemplate.MODEL_DEFAULT.id }?.key
                         ?: com.littlebit.chat.engine.ChatTemplate.MODEL_DEFAULT.id
                     templateId = id
                     settings.chatTemplate = id
