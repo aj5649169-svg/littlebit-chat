@@ -16,8 +16,8 @@ GitHub Actions run, and a clean merge before the next version starts.
 | --- | --- | --- | --- | --- | --- |
 | 0 | `chore/skills-setup` | — | — | OpenCode | **merged** (#7, `9c1e9be`) |
 | 1 | `release/v1.3.2-trust-patch` | 1.3.2 | 14 | OpenCode | **merged** (#8, `c0cae93`) |
-| 2 | `release/v1.3.3-studio-templates` | 1.3.3 | 15 | OpenCode | **in progress** |
-| 3 | `release/v1.3.4-sampler-suite` | 1.3.4 | 16 | OpenCode | not started |
+| 2 | `release/v1.3.3-studio-templates` | 1.3.3 | 15 | OpenCode | **merged** (#11, `925d8d0`) |
+| 3 | `release/v1.3.4-sampler-suite` | 1.3.4 | 16 | OpenCode | **in progress** |
 | 4 | `release/v1.3.5-sqlite-storage` | 1.3.5 | 17 | OpenCode | not started |
 | 5 | `release/v1.3.6-variants-summaries` | 1.3.6 | 18 | OpenCode | not started |
 | 6 | `release/v1.3.7-character-cards` | 1.3.7 | 19 | OpenCode | not started |
@@ -34,6 +34,8 @@ GitHub Actions run, and a clean merge before the next version starts.
 - `main` after Phase 0: `9c1e9be489e994011786faf6c555323b9e994620`
 - `main` after v1.3.2 (PR #8): `c0cae93` — `versionCode = 14`,
   `versionName = "1.3.2"`.
+- `main` after v1.3.3 (PR #11): `925d8d05c1f7bf9f47949bfc55c7e751571ef2f7` —
+  `versionCode = 15`, `versionName = "1.3.3"`.
 - `third_party/llama.cpp` pinned at `6aee508`; `stable-diffusion.cpp` pinned at
   `2988060`. `scripts/apply-patches.sh` is never modified.
 
@@ -65,7 +67,7 @@ merge commit `c0cae93`.
 7. **Privacy & permissions** row reading the install's real permissions.
 8. 19 new JVM tests (`ChatBudgetTest`, `ChatJsonTest`, `ChatImportTest`).
 
-## Phase 2 — v1.3.3 "Image Studio correctness + prompt/engine seams" (code 15)
+## Phase 2 — v1.3.3 "Image Studio correctness + prompt/engine seams" (merged, code 15)
 
 Live v1.3.2 device bugs fixed here:
 
@@ -104,14 +106,17 @@ Also shipped in 1.3.3:
 - Tests: `ImageProgressTest`, `ImageModelGuardTest`, `ChatTemplateTest`,
   `StopStringsTest`, `ThinkBlocksTest` additions.
 
-## Phase 3 — v1.3.4 "Full sampler suite" (code 16)
+## Phase 3 — v1.3.4 "Full sampler suite" (in progress, code 16)
 
-Fixed 16-slot `jdoubleArray` sampler contract (index map documented), canonical
+Fixed exact-22-slot `jdoubleArray` sampler contract (expanded from 16 because 22
+independent values are required; index map documented), canonical
 chain order: penalties → DRY → top_k → typical → top_n_sigma → top_p → min_p →
 XTC → temp_ext → mirostat_v2/dist. `engine/SamplerConfig.kt` (pure) for
-round-trip + clamping; mirostat mutually exclusive with top_p/min_p. One
-"Sampler suite" group in Advanced settings. **Defaults reproduce v1.3.3 output
-exactly.**
+round-trip + clamping; mirostat mutually exclusive with typical/top_n_sigma/
+top_p/min_p/xtc. Lossless atomic sampler preferences retain legacy settings;
+explicit seed `0xFFFFFFFF` remains deterministic despite upstream's random
+sentinel. One "Sampler suite" group in Advanced settings. **Defaults reproduce
+v1.3.3 output exactly.**
 
 ## Phase 4 — v1.3.5 "SQLite storage" (code 17)
 
@@ -160,6 +165,8 @@ empty/loading/error per screen, 48 dp targets, M3 semantic roles).
 
 ## Next action
 
-1. Finish `release/v1.3.3-studio-templates`, open PR to `main`, wait for a
-   green GitHub Actions run, merge, record the merge SHA here.
-2. Start `release/v1.3.4-sampler-suite` from the merged `main`.
+1. Finish `release/v1.3.4-sampler-suite`, open PR to `main`, wait for a green
+   GitHub Actions run, merge, and record the merge SHA here.
+2. After the v1.3.4 merge, provide only the read-only SQLite/WAL pre-audit for
+   `release/v1.3.5-sqlite-storage`; do not implement or start that release
+   without a new instruction.

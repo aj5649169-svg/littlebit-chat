@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
@@ -48,7 +49,8 @@ import kotlin.math.roundToInt
  * is at least 44 dp tall and the thumb centre stays inside the track bounds.
  * Discrete `steps` snap with a subtle haptic tick, and every value is exposed to
  * accessibility services with `ProgressBarRangeInfo` + `setProgress`. RTL drags
- * and system scaling keep working because the track is measured in pixels.
+ * and system scaling keep working because the track is measured in pixels. The
+ * 48 dp control keeps the slider's touch target accessible.
  */
 @Composable
 fun LittleBitSlider(
@@ -85,13 +87,13 @@ fun LittleBitSlider(
     val ring = MaterialTheme.colorScheme.surface
 
     Row(
-        modifier = modifier.fillMaxWidth().heightIn(min = 44.dp),
+        modifier = modifier.fillMaxWidth().heightIn(min = 48.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Canvas(
             modifier = Modifier
                 .weight(1f)
-                .height(44.dp)
+                .height(48.dp)
                 .pointerInput(enabled, valueRange, steps, rtl) {
                     if (!enabled) return@pointerInput
                     detectTapGestures { offset ->
@@ -120,10 +122,16 @@ fun LittleBitSlider(
                 }
                 .semantics {
                     if (contentDescription != null) this.contentDescription = contentDescription
+                    if (!enabled) disabled()
                     progressBarRangeInfo = ProgressBarRangeInfo(value, valueRange, steps)
                     setProgress { target ->
-                        emit(((target - valueRange.start) / span).coerceIn(0f, 1f))
-                        true
+                        if (enabled) {
+                            emit(((target - valueRange.start) / span).coerceIn(0f, 1f))
+                            onValueChangeFinished?.invoke()
+                            true
+                        } else {
+                            false
+                        }
                     }
                 },
         ) {

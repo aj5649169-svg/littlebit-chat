@@ -177,17 +177,14 @@ class LlamaEngine(diagnosticPath: String? = null) : LlmEngine {
                 }
             }
             val stopArray = params.stopStrings.toTypedArray()
+            val sampler = params.sampler.toDoubleArray()
             val status = if (prompt == null) {
                 LlamaJni.nativeContinueGenerate(
-                    handle,
-                    params.temperature, params.topK, params.topP, params.minP, params.repeatPenalty, params.dryMultiplier,
-                    params.maxTokens, params.seed, params.thinkingBudget, stopArray, cb,
+                    handle, sampler, params.maxTokens, params.thinkingBudget, stopArray, cb,
                 )
             } else {
                 LlamaJni.nativeGenerate(
-                    handle, prompt,
-                    params.temperature, params.topK, params.topP, params.minP, params.repeatPenalty, params.dryMultiplier,
-                    params.maxTokens, params.seed, params.thinkingBudget, stopArray, cb,
+                    handle, prompt, sampler, params.maxTokens, params.thinkingBudget, stopArray, cb,
                 )
             }
             val m = metrics()
