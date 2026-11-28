@@ -753,6 +753,10 @@ private fun Telemetry(vm: ChatViewModel, timing: com.littlebit.chat.engine.Reply
             Text("Prompt   ${timing.promptTokens} tokens · %.1f p/s".format(timing.promptRate))
             Text("Generation   ${timing.tokens} tokens · %.1f t/s".format(timing.genRate))
             Text("Context   ${timing.used} / ${timing.capacity} tokens")
+            if (vm.kvResumeMillis >= 0) Text(
+                "Resumed in %.1f s (cache hit)".format(vm.kvResumeMillis / 1000.0),
+                color = MaterialTheme.colorScheme.primary,
+            )
             androidx.compose.material3.LinearProgressIndicator(progress = { ratio.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
             if (ratio >= .8f) TextButton(onClick = { details = false; vm.newChatFromMeter() }) { Text("New chat") }
             Spacer(Modifier.height(16.dp))

@@ -320,6 +320,21 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit, onOpenStudio: () -> Un
                     )
                 }
             } else {
+                item(key = "arm-note") {
+                    Card(
+                        shape = RoundedCornerShape(14.dp),
+                        colors = androidx.compose.material3.CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        ),
+                    ) {
+                        Text(
+                            "Q4_0 (ARM online repacking · 2–3× faster prefill)",
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                    }
+                }
                 item(key = "filters") {
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         FilterChip(selected = fitsOnly, onClick = { fitsOnly = !fitsOnly }, label = { Text("Fits my phone") })
@@ -342,8 +357,8 @@ fun ModelHubScreen(vm: ChatViewModel, onBack: () -> Unit, onOpenStudio: () -> Un
                             )
                             Text(
                                 when (tier) {
-                                    "0.55-Bit (LittleBit)" -> "Exclusive Q1_0 path. Fits 8B in ~1.2 GiB RAM — an experimental early checkpoint for ultra-low-RAM testing, not an everyday model yet."
-                                    "8B spotlight" -> "2-bit models reduce storage and memory use. Start at 2K context on 6–8 GB phones."
+                                    "0.55-Bit (LittleBit)" -> "Advanced: Q1_0 is a conversion-only path with no prebuilt checkpoint. Fits 8B in ~1.2 GiB RAM, but quality is still being measured — keep a 2-bit or Q4 model for everyday use."
+                                    "8B spotlight" -> "On modern ARM, Q4_0 is the fast choice: llama.cpp repacks it for NEON SIMD at load time, giving roughly 2–3× faster prompt processing than un-repacked quants. 2-bit saves RAM; Q4_0 saves time."
                                     "Image" -> "Image Studio models. SD 1.5 Inpainting and SD-Turbo run through stable-diffusion.cpp; Qwen Image 2.1 Turbo is experimental 2-bit."
                                     else -> group.first().tierLabel + " models"
                                 },
@@ -477,7 +492,7 @@ private fun ModelCard(entry: ModelEntry, fit: String, onDownload: () -> Unit) {
             }
             if (entry.tier == "0.55-Bit (LittleBit)") {
                 BadgeChip(
-                    text = "Exclusive · Q1_0",
+                    text = "Advanced · conversion",
                     color = ExperimentalColor,
                     modifier = Modifier.padding(top = 6.dp),
                 )

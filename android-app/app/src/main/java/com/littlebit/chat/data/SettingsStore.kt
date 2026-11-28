@@ -89,8 +89,12 @@ class SettingsStore(context: Context) {
     var customPrompt by label("custom_prompt", systemPrompt)
     var persona by label("persona", if (systemPrompt == DEFAULT_SYSTEM_PROMPT) "Concise" else "Custom")
 
-    /** Opt-in on-disk KV cache. Off by default: a 4K F16 cache can be hundreds of MB. */
-    var saveKvCache by flag("save_kv_cache", false)
+    /**
+     * On-disk KV cache, on by default. Chats shorter than
+     * [com.littlebit.chat.engine.KvCacheStore.MIN_SAVE_TOKENS] are skipped so a
+     * short conversation never pays for a cache write it cannot reuse.
+     */
+    var saveKvCache by flag("save_kv_cache", true)
 
     /** Standard-edition cloud API (the offline build never reads these for networking). */
     var cloudMode by flag("cloud_mode", false)

@@ -15,6 +15,8 @@ import com.littlebit.chat.data.Assistant
 import com.littlebit.chat.data.AssistantStore
 import com.littlebit.chat.data.Assistants
 import com.littlebit.chat.data.ChatExport
+import com.littlebit.chat.data.ChatImport
+import com.littlebit.chat.data.ChatImportResult
 import com.littlebit.chat.data.ChatMessage
 import com.littlebit.chat.data.ChatSession
 import com.littlebit.chat.data.ChatStore
@@ -78,6 +80,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------- KV cache
     var kvCacheBytes by mutableLongStateOf(0L)
+
+    /** Wall-clock restore time of the last KV cache hit, or -1 when none. */
+    var kvResumeMillis by mutableLongStateOf(-1L)
         private set
     private val kvCacheDir: File get() = File(getApplication<Application>().cacheDir, "kv_cache")
 
@@ -176,6 +181,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
     // A pending RAM dialog also blocks re-entry, so a second tap cannot replace
     // the stored pending load while the modal is open.
+    //
+    // Declared here, above `init`, on purpose: Kotlin initializes properties in
+    // source order, so a getter read from `init` (createChat() -> `if (busy)`)
+    // would dereference this delegate before it existed and crash on launch.
+    data class RamWarning(val budget: RamBudgetEstimator.Budget, val name: String)
+
+    var ramWarning by mutableStateOf<RamWarning?>(null)
+        private set
     val busy get() = studioBusy || isGenerating || benchmarking || loadProgress >= 0f || ramWarning != null
     private var cacheSession: String? = null
     private var cacheSystem: String? = null
@@ -304,8 +317,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         store.load()
+        store.lastError?.let { chatError = it }
         val restored = store.sessions.firstOrNull()
-        if (restored != null) activate(restored) else createChat()
+        if (restored != null) activate(restored) else if (!store.oversized) createChat()
         refreshLocalModels()
         val (loadedAssistants, active) = assistantStore.load(settings.persona, settings.systemPrompt, settings.customPrompt)
         assistants = loadedAssistants
@@ -332,10 +346,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         return Triple(info.totalMem, info.availMem, info.lowMemory)
     }
 
-    data class RamWarning(val budget: RamBudgetEstimator.Budget, val name: String)
-
-    var ramWarning by mutableStateOf<RamWarning?>(null)
-        private set
     private var pendingLoad: (() -> Unit)? = null
 
     fun ramBudget(modelBytes: Long, nCtx: Int = settings.contextSize): RamBudgetEstimator.Budget {
@@ -1552,6 +1562,27 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // --------------------------------------------------------------- KV cache
+    /**
+     * Imports a Chat JSON export. Returns a user-facing error, or null on success.
+     * Every imported chat becomes a normal session so it can be renamed or deleted.
+     */
+    fun importChat(text: String): String? {
+        val parsed = ChatImport.parse(text)
+        if (parsed is ChatImportResult.Failure) return parsed.message
+        parsed as ChatImportResult.Success
+        var first: ChatSession? = null
+        for (chat in parsed.chats) {
+            val session = store.create()
+            session.title = chat.title
+            session.messages.clear()
+            session.messages.addAll(chat.messages)
+            store.touch(session)
+            if (first == null) first = session
+        }
+        first?.let { activate(it) }
+        return null
+    }
+
     fun refreshKvCacheSize() {
         viewModelScope.launch(Dispatchers.IO) { kvCacheBytes = KvCacheStore.sizeBytes(kvCacheDir) }
     }
@@ -1577,6 +1608,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Loads a validated sidecar into the live context. Any mismatch is a miss, never a crash. */
     private suspend fun tryWarmKvCache(prior: List<ChatMessage>): Boolean {
         if (!settings.saveKvCache || !engine.isLoaded) return false
+        kvResumeMillis = -1L
+        val started = System.currentTimeMillis()
         val session = currentSession ?: return false
         val dir = kvCacheDir
         val meta = KvCacheStore.readMeta(KvCacheStore.metaFile(dir, session.id)) ?: return false
@@ -1605,6 +1638,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // The restored state ends at the previous assistant reply; the new user
         // turn is prefilled by the normal generate() call.
         promptProgress = ""
+        kvResumeMillis = (System.currentTimeMillis() - started).coerceAtLeast(0L)
         return true
     }
 
@@ -1618,7 +1652,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val tokens = runCatching {
             engine.saveKvCache(KvCacheStore.tempFile(dir, session.id).absolutePath)
         }.getOrDefault(-1)
-        if (tokens <= 0) {
+        if (tokens < KvCacheStore.MIN_SAVE_TOKENS) {
+            // Too small to be worth the write: a 1K-token prefill is cheaper than
+            // serialising and validating a cache file.
             KvCacheStore.tempFile(dir, session.id).delete()
             return
         }

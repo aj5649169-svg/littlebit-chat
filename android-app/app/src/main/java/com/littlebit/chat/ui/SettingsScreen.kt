@@ -49,6 +49,8 @@ import androidx.compose.ui.unit.dp
 import com.littlebit.chat.data.SettingsStore
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private data class RamInfo(val total: Long, val avail: Long)
 
@@ -136,11 +138,104 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onErrorContainer,
                                 maxLines = 14, overflow = TextOverflow.Ellipsis)
-                            TextButton(
-                                onClick = { crashFile.delete(); crashLog = null },
-                                modifier = Modifier.align(Alignment.End),
-                            ) { Text("Dismiss and delete") }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                TextButton(onClick = {
+                                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                        as android.content.ClipboardManager
+                                    clipboard.setPrimaryClip(
+                                        android.content.ClipData.newPlainText("LittleBit crash log", crashLog.orEmpty()),
+                                    )
+                                }) { Text("Copy") }
+                                TextButton(onClick = {
+                                    val report = android.content.Intent(android.content.Intent.ACTION_SEND)
+                                        .setType("text/plain")
+                                        .putExtra(android.content.Intent.EXTRA_SUBJECT, "LittleBit Chat crash log")
+                                        .putExtra(android.content.Intent.EXTRA_TEXT, crashLog.orEmpty())
+                                    context.startActivity(
+                                        android.content.Intent.createChooser(report, "Report crash"),
+                                    )
+                                }) { Text("Report") }
+                                TextButton(onClick = { crashFile.delete(); crashLog = null }) {
+                                    Text("Dismiss and delete")
+                                }
+                            }
                         }
+                    }
+                }
+            }
+            item(key = "privacy") {
+                SettingPanel("Privacy & permissions") {
+                    val requested = remember {
+                        runCatching {
+                            context.packageManager
+                                .getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_PERMISSIONS)
+                                .requestedPermissions?.toList().orEmpty()
+                        }.getOrDefault(emptyList())
+                    }
+                    val network = requested.filter {
+                        it == android.Manifest.permission.INTERNET ||
+                            it == android.Manifest.permission.ACCESS_NETWORK_STATE
+                    }
+                    Text(
+                        if (network.isEmpty()) "Zero network permissions — verified on this install"
+                        else "Network permission present (Standard edition): ${network.joinToString()}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = if (network.isEmpty()) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        if (requested.isEmpty()) "This build declares no runtime permissions at all."
+                        else requested.joinToString("\n") { it.substringAfterLast('.') },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            item(key = "history-import") {
+                var importStatus by remember { mutableStateOf<String?>(null) }
+                val scope = androidx.compose.runtime.rememberCoroutineScope()
+                val picker = androidx.activity.compose.rememberLauncherForActivityResult(
+                    androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+                ) { uri ->
+                    if (uri == null) return@rememberLauncherForActivityResult
+                    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        val text = runCatching {
+                            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { reader ->
+                                val limit = com.littlebit.chat.data.ChatImport.MAX_TEXT_CHARS + 1
+                                val buf = CharArray(8192)
+                                val out = StringBuilder()
+                                while (out.length < limit) {
+                                    val n = reader.read(buf, 0, minOf(buf.size, limit - out.length))
+                                    if (n < 0) break
+                                    out.append(buf, 0, n)
+                                }
+                                out.toString()
+                            }
+                        }.getOrNull()
+                        withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            importStatus = if (text.isNullOrBlank()) {
+                                "Could not read that file."
+                            } else {
+                                vm.importChat(text) ?: "Chat imported."
+                            }
+                        }
+                    }
+                }
+                SettingPanel("Chat history") {
+                    Text(
+                        "Re-import a Chat JSON export. Imported chats appear in the drawer like any other chat.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = { picker.launch(arrayOf("application/json", "text/plain", "*/*")) }) {
+                        Text("Import chat JSON")
+                    }
+                    importStatus?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -209,7 +304,7 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 }
                 SwitchRow(
                     title = "Save KV cache on disk",
-                    subtitle = "Opt-in. Reuses the prompt cache between turns; only the two most recent chats are kept.",
+                    subtitle = "On by default above 1K tokens. Reuses the prompt cache between turns; only the two most recent chats are kept.",
                     checked = settings.saveKvCache,
                 ) { enabled ->
                     settings.saveKvCache = enabled
