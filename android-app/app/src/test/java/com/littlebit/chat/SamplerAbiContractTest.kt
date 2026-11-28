@@ -1,7 +1,9 @@
 package com.littlebit.chat
 
+import com.littlebit.chat.engine.SamplerConfig
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -44,9 +46,33 @@ class SamplerAbiContractTest {
     }
 
     @Test fun bothSidesRequireExactlyTwentyTwoSlots() {
-        assertTrue(samplerConfigSource.contains("require(values.size == SLOT_COUNT)"))
-        assertTrue(nativeSource.contains("constexpr jsize kSamplerSlotCount = 22"))
-        assertTrue(nativeSource.contains("env->GetArrayLength(sampler) != kSamplerSlotCount"))
+        val kotlinDecode = sourceBlock(
+            samplerConfigSource,
+            "fun fromDoubleArray(values: DoubleArray): SamplerConfig {",
+            "private fun Double.finiteOr",
+        )
+        assertTrue(kotlinDecode.contains("require(values.size == SLOT_COUNT)"))
+
+        val nativeRead = sourceBlock(
+            nativeSource,
+            "bool readSamplerOpts(",
+            "// Canonical chain:",
+        )
+        val nativeBuild = sourceBlock(
+            nativeSource,
+            "llama_sampler * buildSampler(",
+            "// Sampling loop shared",
+        )
+        val kotlinRequire = kotlinDecode.indexOf("require(values.size == SLOT_COUNT)")
+        val nativeLengthCheck = nativeRead.indexOf("env->GetArrayLength(sampler) != kSamplerSlotCount")
+        val nativeArrayAccess = nativeRead.indexOf("DoubleArrayView view")
+        val nativeReadCall = nativeBuild.indexOf("readSamplerOpts(env, sampler, o)")
+        val nativeChainInit = nativeBuild.indexOf("llama_sampler_chain_init(sparams)")
+        assertTrue(kotlinRequire >= 0)
+        assertTrue(nativeLengthCheck >= 0)
+        assertTrue(nativeLengthCheck < nativeArrayAccess)
+        assertTrue(nativeReadCall >= 0)
+        assertTrue(nativeReadCall < nativeChainInit)
     }
 
     @Test fun jniSignaturesMatchKotlinDeclarations() {
@@ -143,13 +169,110 @@ class SamplerAbiContractTest {
         )
     }
 
-    @Test fun explicitMaximumSeedHasAForcedSeedPath() {
-        assertTrue(nativeSource.contains("initForcedSeedSampler"))
-        assertTrue(nativeSource.contains("locked_seed && useed == LLAMA_DEFAULT_SEED"))
+    @Test fun explicitMaximumSeedSelectsForcedDistXtcAndMirostatPaths() {
+        val buildSampler = sourceBlock(
+            nativeSource,
+            "llama_sampler * buildSampler(",
+            "// Sampling loop shared",
+        )
+        val seedBlock = buildSampler
+            .substringAfter("const bool locked_seed")
+            .substringBefore("if (!o.mirostat_enabled && o.xtc_probability > 0.0)")
+        assertTrue(seedBlock.contains("force_explicit_seed = locked_seed && useed == LLAMA_DEFAULT_SEED"))
+
+        val xtcBlock = sourceBlock(
+            buildSampler,
+            "if (!o.mirostat_enabled && o.xtc_probability > 0.0) {",
+            "if (o.dynatemp_range > 0.0)",
+        )
+        val forcedXtc = normalizedParameters(xtcBlock)
+            .substringAfter("force_explicit_seed ?")
+            .substringBefore(": llama_sampler_init_xtc")
+        assertTrue(forcedXtc.contains("initForcedSeedSampler("))
+        assertTrue(forcedXtc.contains("ForcedSamplerKind::Xtc"))
+
+        val mirostatChoice = sourceBlock(
+            buildSampler,
+            "if (o.mirostat_enabled) {",
+            "} catch (...) {",
+        )
+        val normalizedMirostatChoice = normalizedParameters(mirostatChoice)
+        val elseIndex = normalizedMirostatChoice.indexOf("} else {")
+        assertTrue(elseIndex > 0)
+        val forcedMirostat = normalizedMirostatChoice
+            .substring(0, elseIndex)
+            .substringAfter("force_explicit_seed ?")
+            .substringBefore(": llama_sampler_init_mirostat_v2")
+        assertTrue(forcedMirostat.contains("initForcedSeedSampler("))
+        assertTrue(forcedMirostat.contains("ForcedSamplerKind::MirostatV2"))
+
+        val forcedDist = normalizedMirostatChoice
+            .substring(elseIndex)
+            .substringAfter("force_explicit_seed ?")
+            .substringBefore(": llama_sampler_init_dist")
+        assertTrue(forcedDist.contains("initForcedSeedSampler("))
+        assertTrue(forcedDist.contains("ForcedSamplerKind::Dist"))
+    }
+
+    @Test fun forcedSeedSamplersMirrorPinnedUpstreamBehavior() {
+        val forcedApply = sourceBlock(
+            nativeSource,
+            "void forcedSamplerApply(",
+            "void forcedSamplerReset(",
+        )
+        val dist = sourceBlock(
+            forcedApply,
+            "if (ctx->kind == ForcedSamplerKind::Dist) {",
+            "if (ctx->kind == ForcedSamplerKind::Xtc) {",
+        )
+        val normalizedDist = normalizedParameters(dist)
+        assertTrue(normalizedDist.contains("if (cur_p->size == 1)"))
+        assertTrue(normalizedDist.contains("double sum_cum = 0.0"))
+        assertTrue(normalizedDist.contains("const double sum_tgt = sum_cum * rnd;"))
+        assertTrue(normalizedDist.contains("cur_p->data[i].p /= sum_cum;"))
+        assertFalse(normalizedDist.contains("forcedSamplerSoftmax(cur_p, false)"))
+
+        val xtc = sourceBlock(
+            forcedApply,
+            "if (ctx->kind == ForcedSamplerKind::Xtc) {",
+            "forcedSamplerSoftmax(cur_p, true);",
+        )
+        val normalizedXtc = normalizedParameters(xtc)
+        val earlyReturn = normalizedXtc.indexOf("cur_p->size < 2")
+        val rngDraw = normalizedXtc.indexOf("distribution(ctx->rng)")
+        assertTrue(earlyReturn >= 0)
+        assertTrue(rngDraw > earlyReturn)
+
+        val forcedClone = sourceBlock(
+            nativeSource,
+            "llama_sampler * forcedSamplerClone(const llama_sampler * smpl) {",
+            "void forcedSamplerFree(",
+        )
+        val forcedInit = sourceBlock(
+            nativeSource,
+            "llama_sampler * initForcedSeedSampler(ForcedSamplerKind kind, uint32_t seed,",
+            "bool readSamplerOpts(",
+        )
+        for (block in listOf(forcedClone, forcedInit)) {
+            val uniqueContext = block.indexOf("std::make_unique<ForcedSeedSampler>")
+            val samplerInit = block.indexOf("llama_sampler_init(")
+            val ownershipRelease = block.indexOf(".release()")
+            assertTrue(uniqueContext >= 0)
+            assertTrue(samplerInit > uniqueContext)
+            assertTrue(ownershipRelease > samplerInit)
+        }
     }
 
     private fun normalizedParameters(value: String): String =
-        value.replace(Regex("""\s+"""), " ").trim()
+        value.replace(Regex("""\s+"""), " ").trim().removeSuffix(",")
+
+    private fun sourceBlock(source: String, start: String, end: String): String {
+        val startIndex = source.indexOf(start)
+        assertTrue("Missing source marker: $start", startIndex >= 0)
+        val endIndex = source.indexOf(end, startIndex + start.length)
+        assertTrue("Missing source marker after $start: $end", endIndex > startIndex)
+        return source.substring(startIndex + start.length, endIndex)
+    }
 
     private fun readSource(relativePath: String): String =
         File(repoRoot, relativePath).readText()

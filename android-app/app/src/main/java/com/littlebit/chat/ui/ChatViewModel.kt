@@ -1130,9 +1130,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun samplingParams(maxTokens: Int = assistantMaxTokens ?: settings.maxTokens) = SamplingParams(
-        sampler = settings.samplerConfig.copy(
-            temperature = assistantTemperature ?: settings.samplerConfig.temperature,
-        ),
+        sampler = settings.samplerConfig.let { config ->
+            config.copy(temperature = assistantTemperature ?: config.temperature)
+        },
         maxTokens = maxTokens,
         thinkingBudget = if (fastMode) -1 else settings.thinkingBudget.toIntOrNull() ?: -1,
         stopStrings = settings.stopStrings.lines().filter { it.isNotBlank() }.take(8),

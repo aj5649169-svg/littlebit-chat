@@ -574,25 +574,44 @@ void forcedSamplerApply(llama_sampler * smpl, llama_token_data_array * cur_p) {
     if (cur_p == nullptr || cur_p->data == nullptr || cur_p->size == 0) return;
 
     if (ctx->kind == ForcedSamplerKind::Dist) {
-        forcedSamplerSoftmax(cur_p, false);
-        double cumulative = 0.0;
-        for (size_t i = 0; i < cur_p->size; ++i) {
-            cumulative += cur_p->data[i].p;
+        // Mirrors llama.cpp's CPU Dist sampler: keep float weights, accumulate
+        // them in double precision, sample from the unnormalized cumulative sum,
+        // and normalize in the same pass.
+        cur_p->selected = 0;
+        std::uniform_real_distribution<double> distribution(0.0, 1.0);
+        if (cur_p->size == 1) {
+            (void) distribution(ctx->rng);
+            cur_p->data[0].p = 1.0f;
+            return;
         }
 
-        std::uniform_real_distribution<double> distribution(0.0, 1.0);
-        const double target = cumulative * distribution(ctx->rng);
-        double running = 0.0;
+        float max_logit = cur_p->data[0].logit;
+        if (!cur_p->sorted) {
+            for (size_t i = 1; i < cur_p->size; ++i) {
+                max_logit = std::max(max_logit, cur_p->data[i].logit);
+            }
+        }
+
+        double sum_cum = 0.0;
+        for (size_t i = 0; i < cur_p->size; ++i) {
+            const float probability = std::exp(cur_p->data[i].logit - max_logit);
+            cur_p->data[i].p = probability;
+            sum_cum += probability;
+        }
+
+        const double rnd = distribution(ctx->rng);
+        double sum_run = 0.0;
+        const double sum_tgt = sum_cum * rnd;
         bool found = false;
         for (size_t i = 0; i < cur_p->size; ++i) {
             if (!found) {
-                running += cur_p->data[i].p;
-                if (running >= target) {
+                sum_run += cur_p->data[i].p;
+                if (sum_run >= sum_tgt) {
                     cur_p->selected = static_cast<int32_t>(i);
                     found = true;
                 }
             }
-            cur_p->data[i].p /= cumulative;
+            cur_p->data[i].p /= sum_cum;
         }
         if (!found) {
             cur_p->selected = static_cast<int32_t>(cur_p->size - 1);
@@ -601,6 +620,12 @@ void forcedSamplerApply(llama_sampler * smpl, llama_token_data_array * cur_p) {
     }
 
     if (ctx->kind == ForcedSamplerKind::Xtc) {
+        if (ctx->probability <= 0.0f ||
+            ctx->threshold > 0.5f ||
+            cur_p->size < 2) {
+            return;
+        }
+
         std::uniform_real_distribution<float> distribution(0.0f, 1.0f);
         if (distribution(ctx->rng) > ctx->probability) return;
 
@@ -667,9 +692,10 @@ static llama_sampler_i forced_sampler_i = {
 
 llama_sampler * forcedSamplerClone(const llama_sampler * smpl) {
     const auto * source = static_cast<const ForcedSeedSampler *>(smpl->ctx);
-    auto * copy = new ForcedSeedSampler(*source);
-    auto * result = llama_sampler_init(&forced_sampler_i, copy);
-    if (!result) delete copy;
+    auto copy = std::make_unique<ForcedSeedSampler>(*source);
+    auto * result = llama_sampler_init(&forced_sampler_i, copy.get());
+    if (!result) return nullptr;
+    copy.release();
     return result;
 }
 
@@ -680,9 +706,11 @@ void forcedSamplerFree(llama_sampler * smpl) {
 llama_sampler * initForcedSeedSampler(ForcedSamplerKind kind, uint32_t seed,
                                        float probability, float threshold,
                                        float tau, float eta) {
-    auto * ctx = new ForcedSeedSampler(kind, seed, probability, threshold, tau, eta);
-    auto * result = llama_sampler_init(&forced_sampler_i, ctx);
-    if (!result) delete ctx;
+    auto ctx = std::make_unique<ForcedSeedSampler>(
+        kind, seed, probability, threshold, tau, eta);
+    auto * result = llama_sampler_init(&forced_sampler_i, ctx.get());
+    if (!result) return nullptr;
+    ctx.release();
     return result;
 }
 

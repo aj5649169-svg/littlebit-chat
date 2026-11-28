@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
@@ -121,11 +122,16 @@ fun LittleBitSlider(
                 }
                 .semantics {
                     if (contentDescription != null) this.contentDescription = contentDescription
+                    if (!enabled) disabled()
                     progressBarRangeInfo = ProgressBarRangeInfo(value, valueRange, steps)
                     setProgress { target ->
-                        emit(((target - valueRange.start) / span).coerceIn(0f, 1f))
-                        onValueChangeFinished?.invoke()
-                        true
+                        if (enabled) {
+                            emit(((target - valueRange.start) / span).coerceIn(0f, 1f))
+                            onValueChangeFinished?.invoke()
+                            true
+                        } else {
+                            false
+                        }
                     }
                 },
         ) {
